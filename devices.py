@@ -12,8 +12,8 @@ home shows.  Every item becomes one of two things:
 
     owned, switched, notes = household_devices(home_details)
 
-Nothing the user entered is dropped silently: each item is placed, or a note
-says why it was merged with another one.
+The home shows exactly what was entered: every listed item is placed, and
+nothing that was not listed is added.  An empty list gives an empty home.
 """
 
 import re
@@ -53,6 +53,7 @@ _SWITCHED_WORDS = [
     (r"computer|desktop|\bpc\b", ("generic", 0.15, "Desktop computer", "bedroom")),
     (r"router|wi-?fi|modem", ("generic", 0.01, "Wi-Fi router", "living")),
     (r"charger|phone", ("generic", 0.01, "Phone charger", "bedroom")),
+    (r"sewing", ("generic", 0.10, "Sewing machine motor", "bedroom")),
     (r"vacuum", ("generic", 1.00, "Vacuum cleaner", "utility")),
     (r"dryer", ("generic", 1.20, "Hair or clothes dryer", "utility")),
     (r"speaker|music|console|playstation|xbox|set.?top", ("generic", 0.08, "Home entertainment unit", "living")),
@@ -76,7 +77,7 @@ _SLOTS = {
     "light": {"living": (5.3, 3.6), "bedroom": (4.1, 5.7), "kitchen": (9.2, 3.3),
               "bathroom": (7.0, 7.1), "utility": (9.4, 7.9)},
     "tv": {"living": (2.2, 0.21)},
-    "generic": {"living": [(0.55, 1.35), (4.4, 4.35), (6.35, 3.3)], "bedroom": [(0.6, 8.3), (4.0, 8.5)],
+    "generic": {"living": [(0.5, 0.75), (4.4, 4.35), (6.35, 3.3)], "bedroom": [(0.6, 8.3), (4.0, 8.5)],
                 "kitchen": [(9.0, 3.4), (10.6, 3.5)], "utility": [(9.2, 7.0), (11.2, 6.3)],
                 "bathroom": [(7.9, 6.2)]},
 }
@@ -84,7 +85,8 @@ _ROOM_NAMES = {"living": "Living room", "bedroom": "Bedroom", "kitchen": "Kitche
                "utility": "Utility", "bathroom": "Bathroom"}
 _FIXED_KEYS = {("fan", "living"): "fan_living", ("fan", "bedroom"): "fan_bedroom"}
 
-DEFAULT_SWITCHED = [("Living room fan", "Lighting"), ("Bedroom fan", "Lighting")]
+_EXTRA_ROOM = {"ac": "living", "fridge": "kitchen", "microwave": "kitchen", "geyser": "bathroom",
+               "washing_machine": "utility", "water_pump": "utility"}
 
 
 def _item_name(item) -> Tuple[str, str]:
@@ -136,7 +138,7 @@ def household_devices(home_details: Optional[dict]):
       owned     tuple of detector keys, in the standard order
       switched  list of dicts: key, name, product, kw, kind, pos, room, description
       notes     plain sentences about items that were merged or could not be placed
-    With no setup list the full demo home is returned.
+    Only listed items are returned; nothing is added on the household's behalf.
     """
     raw = (home_details or {}).get("appliances", []) or []
     items = []
@@ -144,24 +146,26 @@ def household_devices(home_details: Optional[dict]):
         name, kind_type = _item_name(item)
         if name:
             items.extend(_expand(name, kind_type))
-    demo = not items
-    if demo:
-        items = [(DEFAULT_PROFILES[k].name, "Other") for k in APPLIANCE_KEYS] + list(DEFAULT_SWITCHED)
 
     found, switched, notes = [], [], []
     placer, counts = _Placer(), {}
     for name, kind_type in items:
         key = detected_key(name)
-        if key:
-            if key in found:
-                notes.append(f"{name}: the meter model follows one {DEFAULT_PROFILES[key].name.lower()} "
-                             f"per home, so this is counted together with the first one.")
-            else:
-                found.append(key)
+        if key and key not in found:
+            found.append(key)
             continue
         low = name.lower()
         match = next((spec for pattern, spec in _SWITCHED_WORDS if re.search(pattern, low)), None)
-        if match:
+        if key:
+            # A second unit of a detectable type: the meter model follows one per
+            # home, so the extra one is still shown, from its switch.
+            prof = DEFAULT_PROFILES[key]
+            kind, kw, product, prefer = "generic", prof.rated_kw, prof.product, _EXTRA_ROOM.get(key, "any")
+            name = f"{name} {sum(1 for d in switched if d.get('extra_of') == key) + 2}"
+            low = name.lower()
+            notes.append(f"{name}: the meter model follows one {prof.name.lower()} per home, "
+                         f"so this extra one is shown from its switch.")
+        elif match:
             kind, kw, product, prefer = match
         else:
             kw, product, prefer = _BY_TYPE.get(kind_type, _BY_TYPE["Other"])
@@ -179,15 +183,15 @@ def household_devices(home_details: Optional[dict]):
         label = name if room is None or _ROOM_NAMES[room].lower() in low or kind == "tv" and room == "living" \
             else f"{name} ({_ROOM_NAMES[room].lower()})"
         switched.append({
+            "extra_of": key,
             "key": dev_key, "name": label[:48], "product": product, "kw": round(float(kw), 3),
             "kind": kind, "pos": [float(pos[0]), float(pos[1])], "room": _ROOM_NAMES[room],
             "description": f"{product}, about {_watts(kw)}. In the {_ROOM_NAMES[room].lower()}. {NOT_DETECTED}",
         })
     owned = tuple(k for k in APPLIANCE_KEYS if k in found)
-    if not owned:
-        owned = tuple(APPLIANCE_KEYS)
-        notes.append("None of the appliances you listed is one the meter model can detect, so the "
-                     "six demo appliances are shown as well, to keep the meter reading meaningful.")
+    if switched and not owned:
+        notes.append("None of the items you listed is one the meter model can detect, so they are all "
+                     "shown from their switches and the meter shows only the background load.")
     return owned, switched, notes
 
 

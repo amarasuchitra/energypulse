@@ -1000,10 +1000,14 @@ def _render_onboard_step2(od):
                 custom_name = st.text_input(T("name_label"), placeholder=T("name_ph"), key="ob_app_custom")
         with add_cols[1]:
             type_options = ["Cooling", "Heating", "Kitchen", "Laundry", "Electronics", "Lighting", "Other"]
+            # The category follows the appliance picked; a custom item starts as "Other".
+            usual = {"Air Conditioner": "Cooling", "Refrigerator": "Kitchen", "Washing Machine": "Laundry",
+                     "Water Heater": "Heating", "Television": "Electronics", "Microwave": "Kitchen",
+                     "Lights & Fans": "Lighting"}.get(preset_label_to_name.get(chosen, ""), "Other")
             app_type = st.selectbox(
                 T("category_label"),
                 [localized_appliance_type(t) for t in type_options],
-                key="ob_app_type")
+                index=type_options.index(usual), key=f"ob_app_type_{type_options.index(usual)}_{options.index(chosen)}")
             type_label_to_value = {
                 localized_appliance_type(t): t for t in type_options
             }
@@ -1023,13 +1027,16 @@ def _render_onboard_step2(od):
                 od["appliances"].append({"name": name, "type": canonical_type, "usage": "Medium", "icon": icon})
                 st.rerun()
     st.markdown("")
+    if not od.get("appliances"):
+        st.caption("Add at least one appliance to continue. Your 3D home shows only what you add here.")
     c_back, c_next = st.columns([1, 1])
     with c_back:
         if st.button(T("btn_back"), width="stretch", key="ob_back2"):
             st.session_state.onboard_step = 1
             st.rerun()
     with c_next:
-        if st.button(T("btn_next_rate"), width="stretch", type="primary", key="ob_next2"):
+        if st.button(T("btn_next_rate"), width="stretch", type="primary", key="ob_next2",
+                     disabled=not od.get("appliances")):
             st.session_state.onboard_step = 3
             st.rerun()
 
@@ -1180,7 +1187,7 @@ def render_brief_section(brief):
                             "Nothing would save more than Rs. 30 a month.</p>", unsafe_allow_html=True)
             for note in brief["notes"][:2]:
                 st.caption(note)
-            st.caption("The refrigerator is never told to switch off or move. Each figure shows how it was worked out.")
+            st.caption("Each figure shows how it was worked out.")
     st.caption(f"Forecast rule: the average of the last 7 days and of the same weekday in the last 4 weeks, from "
                f"{brief['history_days']} days of main-meter history. This notification is sent once a day and is "
                f"kept on the Notifications page.")

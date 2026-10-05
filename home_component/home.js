@@ -181,7 +181,7 @@ const screenMat = std(0x10131c);
 box(2.6, 0.42, 0.9, 0.9, 0.04, 3.9, furn); box(2.6, 0.75, 0.22, 0.9, 0.04, 4.6, furn);   // sofa
 box(0.7, 0.12, 0.7, 1.0, 0.46, 3.95, pale); box(0.7, 0.12, 0.7, 2.7, 0.46, 3.95, pale);  // cushions
 box(1.2, 0.22, 0.7, 1.6, 0.06, 2.5, soft);                                               // coffee table
-box(2.4, 0.38, 0.4, 1.0, 0.04, 0.12, furn); box(1.5, 0.75, 0.06, 1.45, 0.5, 0.14, screenMat); // tv
+box(2.4, 0.38, 0.4, 1.0, 0.04, 0.12, furn);                                              // low console (the TV itself is drawn only if the household lists one)
 box(1.2, 0.45, 1.9, 4.6, 0.04, 0.8, soft);                                               // dining
 for (const [x, z] of [[4.25, 1.0], [4.25, 2.1], [5.85, 1.0], [5.85, 2.1]]) box(0.32, 0.3, 0.32, x, 0.04, z, furn); // stools
 box(2.2, 0.36, 2.5, 1.4, 0.06, 6.2, furn); box(2.0, 0.14, 2.3, 1.5, 0.42, 6.3, pale);    // bed
@@ -240,6 +240,7 @@ function buildDevice(f) {
     addLight(0xffd9a0, x, 1.38, z, 5.5, 7);
     u.anchor = new THREE.Vector3(x + OX, 1.98, z + OZ);
   } else if (f.kind === "tv") {
+    box(1.5, 0.75, 0.06, x - 0.75, 0.5, z - 0.07, screenMat, g);
     u.mat = glowMat(0x10131c, 0x7fb4ff);
     box(1.42, 0.67, 0.02, x - 0.71, 0.54, z - 0.005, u.mat, g).castShadow = false;
     addLight(0x7fb4ff, x, 0.9, z + 0.7, 3.5, 4);
@@ -538,7 +539,7 @@ function load(data) {
     if (pins[key]) pins[key].style.display = has ? "" : "none";
   }
   if (!data.appliances.some((a) => a.key === S.selected) && !data.fans.some((f) => f.key === S.selected))
-    S.selected = data.appliances[0].key;
+    S.selected = (data.appliances[0] || data.fans[0] || {}).key || null;
 
   if (first || data.source.real) S.playhead = data.source.real ? data.live_edge - 1 : data.start_minute;
   if (first && data.appliances.some((a) => a.key === "ac")) S.selected = "ac";
@@ -588,7 +589,7 @@ function buildList() {
     li.appendChild(sw);
     ul.appendChild(li);
   };
-  group("Found from the main meter");
+  if (S.data.appliances.length) group("Found from the main meter");
   for (const a of S.data.appliances) row(a.key, a.name, a.product, a.color, () => toggle(a.key), a.locked);
   if (S.data.fans.length) group("Shown from their switch");
   for (const f of S.data.fans) row(f.key, f.name, `${f.product}, ${f.room.toLowerCase()}`, "var(--fill)", () => toggleFan(f.key), false);
@@ -706,7 +707,9 @@ function updatePanel(m) {
 
   // selected appliance
   const a = byKey(S.selected);
-  if (!a) {
+  if (!a && !devByKey(S.selected)) {
+    $("detail").innerHTML = `<p class="never">Select a device to see its details.</p>`;
+  } else if (!a) {
     const f = devByKey(S.selected), on = !!S.fans[f.key];
     $("detail").innerHTML = `<h3>${f.name}</h3><div class="kind">${f.description}</div>
       <p>${on ? `On now, drawing ${(f.kw * 1000).toFixed(0)} W.` : "Off now."} This session: ${(S.devKwh[f.key] || 0).toFixed(3)} units, ${rs(S.devCost[f.key] || 0)}.</p>

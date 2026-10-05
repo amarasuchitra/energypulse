@@ -162,7 +162,7 @@ def test_home_only_reports_appliances_it_owns(model):
     owned = owned_appliances({"appliances": [{"name": "Air Conditioner"}, {"name": "Refrigerator"},
                                              {"name": "Television"}]})
     assert owned == ("fridge", "ac")
-    assert set(owned_appliances({"appliances": []})) == set(DEFAULT_PROFILES)
+    assert owned_appliances({"appliances": []}) == ()
     df = simulate_home(days=2, seed=5, include=owned)
     assert df["geyser"].sum() == 0 and df["ac"].sum() > 0
     pred = restrict_to_owned(model.predict(df[["datetime", "mains_kw"]]), owned)
@@ -274,12 +274,13 @@ def test_every_listed_appliance_reaches_the_home():
     assert all(d["kind"] in {"fan", "light", "tv", "generic"} and d["description"] and d["kw"] > 0 for d in switched)
     assert len({d["key"] for d in switched}) == len(switched)
     assert len({(d["kind"], tuple(d["pos"])) for d in switched}) == len(switched)
-    # nothing listed: the demo home, never an empty one
-    demo_owned, demo_switched, _ = household_devices(None)
-    assert set(demo_owned) == set(APPLIANCE_KEYS) and {d["key"] for d in demo_switched} == {"fan_living", "fan_bedroom"}
-    # only undetectable items listed: says so, and keeps the meter meaningful
+    # only what was listed is shown: no fridge-less home gets a fridge, an empty list gives an empty home
+    assert household_devices(None) == ((), [], [])
     owned2, switched2, notes2 = household_devices({"appliances": [{"name": "Television", "type": "Electronics"}]})
-    assert owned2 and switched2[0]["kind"] == "tv" and notes2
+    assert owned2 == () and [d["kind"] for d in switched2] == ["tv"] and notes2
+    # a second unit of a detectable type is still shown, from its switch
+    owned3, switched3, _ = household_devices({"appliances": [{"name": "Air Conditioner"}, {"name": "Air Conditioner"}]})
+    assert owned3 == ("ac",) and len(switched3) == 1 and "air conditioner 2" in switched3[0]["name"].lower()
 
 
 def test_home_setup_is_remembered(tmp_path):

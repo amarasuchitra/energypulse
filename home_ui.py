@@ -233,6 +233,10 @@ def render_home_tab(tariff_rate: float, home_details=None, db=None, household_id
     state.setdefault("fans", {})
     scenario, tod = meter_settings()
     owned, switched, device_notes = household_devices(home_details)
+    if not owned and not switched:
+        st.info("Your home has no appliances yet. Open Settings, choose Edit home and add the appliances "
+                "you have. Only what you add is shown here.")
+        return
     state["fans"] = {k: v for k, v in state["fans"].items() if k in {f["key"] for f in switched}}
     people = _members(db, household_id, user_name, user_email) if db else [{"name": user_name, "email": ""}]
 
@@ -264,11 +268,8 @@ def render_home_tab(tariff_rate: float, home_details=None, db=None, household_id
     if payload["source"]["real"]:
         st.caption(f"Showing readings from {payload['source']['label']}. Detection runs on those readings.")
     else:
-        listed = len((home_details or {}).get("appliances") or [])
-        st.caption("No meter is connected, so this is a replay of a simulated day. "
-                   + (f"The house shows everything you entered during setup: {len(owned)} appliance(s) found from "
-                      f"the meter and {len(switched)} device(s) shown from their switch. "
-                      if listed else "You listed no appliances, so the demo home is shown. ")
-                   + "Edit the list under Settings, Edit home.")
+        st.caption("No meter is connected, so this is a replay of a simulated day. The house shows only what "
+                   f"you entered during setup: {len(owned)} appliance(s) found from the meter and "
+                   f"{len(switched)} device(s) shown from their switch. Add or remove items under Settings, Edit home.")
     for note in device_notes:
         st.caption(note)

@@ -36,9 +36,8 @@ SCENARIOS = {
 
 def owned_appliances(home_details: Optional[dict]) -> Tuple[str, ...]:
     """
-    Detector keys for the appliances this household listed during setup.  If
-    none of them is detectable, the full demo set is used so the app is never
-    empty.  (devices.household_devices also returns the switched devices.)
+    Detector keys for the appliances this household listed during setup.
+    Only listed appliances are returned; the tuple can be empty.  (devices.household_devices also returns the switched devices.)
     """
     from devices import household_devices
     return household_devices(home_details)[0]

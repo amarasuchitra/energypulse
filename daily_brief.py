@@ -168,7 +168,8 @@ def brief_text(brief: dict) -> Tuple[str, str]:
                      f"about Rs. {brief['month_cost']:.0f}.")
     else:
         lines.append("No change is worth making today. Nothing would save more than the small-saving limit.")
-    lines.append("The refrigerator is never told to switch off or run at another time.")
+    if any(a["key"] == "fridge" for a in brief["appliances"]):
+        lines.append("The refrigerator is never told to switch off or run at another time.")
     lines.append("Figures come from the simulated main-meter feed, not a physical meter.")
     return subject, "\n".join(lines)
 
