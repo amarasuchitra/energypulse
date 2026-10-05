@@ -262,11 +262,11 @@ def render_home_tab(tariff_rate: float, home_details=None, db=None, household_id
     activity = _recent_activity(db, household_id) if db else []
     payload.update({
         "theme": theme, "fans": switched, "fan_state": state["fans"],
-        "members": [p["name"] for p in people], "activity": activity,
+        "members": [p["name"] for p in people], "activity": activity, "ack": state.get("nonce"),
         "household_size": len(people),
     })
     payload["version"] = hashlib.md5(
-        f"{payload['version']}|{theme}|{sorted(state['fans'].items())}|{activity[:1]}|{len(people)}|{[f['key'] for f in switched]}".encode()
+        f"{payload['version']}|{theme}|{sorted(state['fans'].items())}|{activity[:1]}|{len(people)}|{state.get('nonce')}|{[f['key'] for f in switched]}".encode()
     ).hexdigest()
 
     value = _component(data=payload, key="energy_home", default=None, height=1000)

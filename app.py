@@ -1220,6 +1220,11 @@ def render_now_section(tariff_rate, owned):
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
 
+def _meter_answer(question, ctx):
+    import meter_chat
+    return meter_chat.answer(question, toolkit_ui.base(ctx), ctx.get("brief"), ctx["owned"], ctx["switched"])
+
+
 def render_brief_strip(brief):
     """One line above the 3D home."""
     if not brief:
@@ -2285,6 +2290,7 @@ def _main_dashboard_inner():
             full_data=full_data,
             scaling_factor=sf,
             tariff_rate=tariff_rate,
+            meter_answer=lambda q: _meter_answer(q, toolkit_ctx()),
         )
 
     if page == "settings":

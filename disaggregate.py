@@ -112,19 +112,42 @@ class Disaggregator:
         for k in self.appliances:
             y_on = states[k].to_numpy()
             clf = HistGradientBoostingClassifier(
-                max_iter=260, learning_rate=0.1, max_leaf_nodes=47,
+                max_iter=340, learning_rate=0.1, max_leaf_nodes=47,
                 class_weight="balanced", random_state=self.seed)
             clf.fit(X, y_on)
             self.classifiers[k] = clf
             # Power is learned only from minutes when the appliance was on.
             reg = HistGradientBoostingRegressor(
-                max_iter=260, learning_rate=0.1, max_leaf_nodes=47,
+                max_iter=340, learning_rate=0.1, max_leaf_nodes=47,
                 random_state=self.seed)
             if y_on.sum() > 50:
                 reg.fit(X[y_on], df[k].to_numpy()[y_on])
                 self.regressors[k] = reg
         self.trained_on = trained_on
         return self
+
+    def tune_thresholds(self, df: pd.DataFrame) -> Dict[str, float]:
+        """
+        Pick, per appliance, how sure the classifier must be before it says
+        "on".  The classifiers are trained to miss nothing, which makes them
+        call some appliances too readily; the cut-off that gives the best F1
+        on `df` (labelled homes NOT used for training or testing) corrects it.
+        """
+        X = _features_by_home(df)
+        states = true_states(df)
+        self.thresholds = {}
+        for k in self.appliances:
+            truth = states[k].to_numpy()
+            proba = self.classifiers[k].predict_proba(X)[:, 1]
+            best, best_f1 = 0.5, -1.0
+            for cut in np.arange(0.30, 0.96, 0.05):
+                on = proba >= cut
+                tp = int((truth & on).sum())
+                f1 = 2 * tp / max(int(truth.sum()) + int(on.sum()), 1)
+                if f1 > best_f1 + 1e-9:
+                    best, best_f1 = float(round(cut, 2)), f1
+            self.thresholds[k] = best
+        return self.thresholds
 
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -136,8 +159,9 @@ class Disaggregator:
         out = pd.DataFrame({"datetime": pd.to_datetime(df["datetime"]).to_numpy(),
                             "mains_kw": mains})
         est = {}
+        thresholds = getattr(self, "thresholds", None) or {}
         for k in self.appliances:
-            on = self.classifiers[k].predict(X).astype(bool)
+            on = self.classifiers[k].predict_proba(X)[:, 1] >= thresholds.get(k, 0.5)
             if k in self.regressors:
                 kw = np.clip(self.regressors[k].predict(X), 0, None)
             else:
@@ -285,7 +309,8 @@ def load_labelled_csv(path: str, datetime_col: str, mains_col: str,
 # --------------------------------------------------------------------------
 def train_default(train_homes: int = 16, test_homes: int = 6, days: int = 10,
                   save: bool = True, verbose: bool = True):
-    from meter_sim import simulate_home, simulate_left_on_day, simulate_many, simulate_random_day
+    from meter_sim import (simulate_home, simulate_left_on_day, simulate_many, simulate_random_day,
+                           simulate_stacked_day)
 
     faults = ["geyser_left_on", "pump_dry_run", "fridge_seal"]
 
@@ -305,11 +330,11 @@ def train_default(train_homes: int = 16, test_homes: int = 6, days: int = 10,
             parts.append(day)
         return pd.concat(parts, ignore_index=True)
 
-    def with_left_on_days(base, n, seed):
+    def with_left_on_days(base, n, seed, maker=simulate_left_on_day):
         # Days where something is switched on and left on for hours.
         parts = [base]
         for i in range(n):
-            day = simulate_left_on_day(seed + i)
+            day = maker(seed + i)
             day.insert(0, "home", base["home"].max() + 1 + i)
             parts.append(day)
         return pd.concat(parts, ignore_index=True)
@@ -332,11 +357,21 @@ def train_default(train_homes: int = 16, test_homes: int = 6, days: int = 10,
     train = with_random_days(train, 120, seed=10_000)
     train = with_left_on_days(train, 110, seed=30_000)
     train = with_varied_homes(train, 14, seed=50_000)
+    train = with_left_on_days(train, 120, seed=70_000, maker=simulate_stacked_day)
     test = with_fault_homes(simulate_many(test_homes, days, seed=99), 6, seed=98)  # unseen homes
     test = with_random_days(test, 30, seed=20_000)
     left_on_test = with_left_on_days(simulate_left_on_day(40_000).assign(home=0), 39, seed=40_001)
+    stacked_test = with_left_on_days(simulate_stacked_day(80_000).assign(home=0), 39, seed=80_001,
+                                     maker=simulate_stacked_day)
     varied_test = with_varied_homes(simulate_home(days=5, seed=60_000).assign(home=0), 7, seed=60_001)
     model = Disaggregator().fit(train, trained_on=f"{train_homes} simulated homes x {days} days")
+    # A third set of homes, used only to set each appliance's decision cut-off.
+    tune = with_fault_homes(simulate_many(4, 5, seed=501), 3, seed=502)
+    tune = with_random_days(tune, 20, seed=90_000)
+    tune = with_left_on_days(tune, 15, seed=91_000)
+    tune = with_left_on_days(tune, 15, seed=92_000, maker=simulate_stacked_day)
+    tune = with_varied_homes(tune, 4, seed=93_000)
+    cutoffs = model.tune_thresholds(tune)
 
     learned = evaluate(model.predict(test), test)
     baseline_parts = [EdgeBaseline().predict(g) for _, g in test.groupby("home", sort=False)]
@@ -346,14 +381,18 @@ def train_default(train_homes: int = 16, test_homes: int = 6, days: int = 10,
         "data": "SIMULATED homes (meter_sim.py). Test homes are different from "
                 "training homes. Real homes will score lower.",
         "train": f"{train_homes} homes x {days} days, 120 days of random overlapping use, 110 days with "
-                 f"appliances left on, and 14 homes with varied habits, 1-minute",
+                 f"appliances left on, 120 days with several switched on together, and 14 homes "
+                 f"with varied habits, 1-minute",
         "test": f"{test_homes} unseen homes x {days} days plus 30 unseen random days, 1-minute",
         "model": learned,
+        "decision_cutoffs": cutoffs,
         "edge_baseline": baseline,
         "left_on_days": evaluate(model.predict(left_on_test), left_on_test),
         "varied_homes": evaluate(model.predict(varied_test), varied_test),
+        "stacked_days": evaluate(model.predict(stacked_test), stacked_test),
         "extra_tests": "left_on_days: 40 unseen days with appliances left on for hours. "
-                       "varied_homes: 8 unseen homes with different habits, sizes and weather.",
+                       "varied_homes: 8 unseen homes with different habits, sizes and weather. "
+                       "stacked_days: 40 unseen days with several appliances switched on together.",
     }
     if save:
         model.save()

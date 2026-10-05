@@ -62,3 +62,6 @@ energypulse.db
 data/.integrity_key
 data/bills/
 data/live_meter.csv
+
+# The appliance-detection model is shipped, so the app does not have to train on start-up.
+!models/nilm_model.pkl

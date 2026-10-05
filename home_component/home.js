@@ -13,7 +13,7 @@ const FAN_ICON = "<circle cx='12' cy='12' r='1.6'/><path d='M12 10.4c0-4 1-6.4 3
 // ---------------------------------------------------------------- Streamlit
 const post = (type, extra = {}) =>
   window.parent.postMessage({ isStreamlitMessage: true, type, ...extra }, "*");
-const sendValue = (value) => post("streamlit:setComponentValue", { value, dataType: "json" });
+const sendValue = (value) => { S.sentNonce = value.nonce; post("streamlit:setComponentValue", { value, dataType: "json" }); };
 const setHeight = () => post("streamlit:setFrameHeight", { height: document.documentElement.scrollHeight });
 
 const GUTTER = 118, TOP = 16, LANE = 15, GAP = 4;   // timeline geometry
@@ -516,7 +516,10 @@ function load(data) {
     if (!has && u.light) u.light.intensity = 0;
     if (pins[key]) pins[key].style.display = has ? "" : "none";
   }
-  if (first) S.fans = { ...(data.fan_state || {}) };
+  // The server's copy of the switches is taken whenever this view has nothing
+  // newer of its own: on first load, after the page rebuilds the view, and once
+  // the server has confirmed the last switch sent from here.
+  if (first || S.sentNonce === undefined || data.ack === S.sentNonce) S.fans = { ...(data.fan_state || {}) };
   const sel = $("member");
   if (sel.options.length !== data.members.length) {
     sel.innerHTML = data.members.map((n) => `<option>${n}</option>`).join("");

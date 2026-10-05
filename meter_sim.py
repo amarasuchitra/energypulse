@@ -322,7 +322,7 @@ def simulate_random_day(seed: int, start: str = "2026-04-01") -> pd.DataFrame:
 
 
 _LEFT_ON = {"ac": (400, 1300), "geyser": (60, 600), "washing_machine": (100, 300),
-            "water_pump": (45, 400), "microwave": (15, 180)}
+            "water_pump": (45, 400), "microwave": (10, 60)}
 
 
 def simulate_left_on_day(seed: int, start: str = "2026-04-01") -> pd.DataFrame:
@@ -346,6 +346,26 @@ def simulate_left_on_day(seed: int, start: str = "2026-04-01") -> pd.DataFrame:
         length = int(rng.integers(lo, hi + 1))
         begin = int(rng.integers(0, MIN_PER_DAY - length))
         switches[key] = [(begin, begin + length)]
+    return simulate_from_switches(switches, seed=seed, start=start, ratings=random_ratings(rng))
+
+
+def simulate_stacked_day(seed: int, start: str = "2026-04-01") -> pd.DataFrame:
+    """
+    One day where two to four appliances are switched on within minutes of each
+    other and run together, which is what someone trying the switches does.
+    The steps in the meter reading pile up, so the model has to tell a geyser
+    plus a microwave from one bigger load.
+    """
+    rng = np.random.default_rng(seed)
+    switches = {}
+    for _ in range(int(rng.integers(1, 3))):                 # one or two such moments in the day
+        keys = list(rng.choice(list(_LEFT_ON), size=int(rng.integers(2, 5)), replace=False))
+        moment = int(rng.integers(30, MIN_PER_DAY - 240))
+        for key in keys:
+            begin = moment + int(rng.integers(0, 25))
+            # A microwave runs on a timer, so even "left on" it is a matter of minutes.
+            length = int(rng.integers(2, 45)) if key == "microwave" else int(rng.integers(20, 420))
+            switches.setdefault(key, []).append((begin, min(MIN_PER_DAY, begin + length)))
     return simulate_from_switches(switches, seed=seed, start=start, ratings=random_ratings(rng))
 
 

@@ -392,7 +392,8 @@ def _localize_status(status: str, language: str) -> str:
 # ──────────────────────────────────────────────────────────────────────
 def render_chat_tab(db, household_id: str, email: str, language: str,
                     full_data: Optional[pd.DataFrame], scaling_factor: float,
-                    tariff_rate: float) -> None:
+                    tariff_rate: float, meter_answer=None) -> None:
+    """meter_answer(question) -> text or None: answers from the household's own meter come first."""
     _section(T("chat_title"))
     st.markdown(T("chat_intro"))
 
@@ -430,6 +431,16 @@ def render_chat_tab(db, household_id: str, email: str, language: str,
         with ask_col[1]:
             submitted = st.form_submit_button(T("chat_ask"), type="primary", width="stretch")
         if submitted and question and question.strip():
+            own = None
+            if meter_answer is not None:
+                try:
+                    own = meter_answer(question.strip())
+                except Exception:
+                    own = None
+            if own:
+                db.save_conversation(household_id, email, question.strip(), own, language,
+                                     tool_calls=["simulated_meter"], is_valid=True)
+                st.rerun()
             with ask_col[0]:
                 with st.spinner("..."):
                     answer, is_valid, _metadata = chatbot.answer_question(
