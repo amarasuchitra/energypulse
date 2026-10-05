@@ -98,17 +98,22 @@ def _background(n: int, rng, start_minute: int = 0) -> np.ndarray:
     """Lights, fans, TV, chargers: slow daily shape plus random steps."""
     minute = (np.arange(n) + start_minute) % MIN_PER_DAY
     hour = minute / 60.0
-    shape = (0.08
+    shape = (0.11
              + 0.10 * np.exp(-((hour - 7.5) ** 2) / 3.0)
              + 0.28 * np.exp(-((hour - 20.5) ** 2) / 5.0))
+    # Things being switched on and off through the day: steps that drift back
+    # to the usual level, so one day's lighting and TV use resembles the next.
     steps = np.zeros(n)
     level, i = 0.0, 0
     while i < n:
         hold = int(rng.integers(20, 180))
-        level = float(np.clip(level + rng.normal(0, 0.05), -0.05, 0.25))
+        level = float(np.clip(0.6 * level + rng.normal(0, 0.035), -0.06, 0.14))
         steps[i:i + hold] = level
         i += hold
-    return np.clip(shape + steps, 0.03, None)
+    # Some days the household is simply home more: a few per cent either way.
+    days = int(np.ceil((n + start_minute) / MIN_PER_DAY))
+    busy = np.repeat(rng.normal(1.0, 0.05, days), MIN_PER_DAY)[start_minute:start_minute + n]
+    return np.clip((shape + steps) * busy, 0.03, None)
 
 
 # --------------------------------------------------------------------------
@@ -133,7 +138,9 @@ def simulate_home(days: int = 7, seed: int = 0, start: str = "2026-04-01",
                   noise_kw: float = 0.012,
                   include: Optional[tuple] = None,
                   usage: Optional[Dict[str, float]] = None,
-                  people: float = 4.0) -> pd.DataFrame:
+                  people: float = 4.0,
+                  temps: Optional[List[float]] = None,
+                  area_sqft: float = 1000.0) -> pd.DataFrame:
     """
     Simulate `days` of one home at 1-minute resolution.
 
@@ -141,6 +148,11 @@ def simulate_home(days: int = 7, seed: int = 0, start: str = "2026-04-01",
             long and how often it runs (0.6 light, 1.0 typical, 1.5 heavy).
     people: number of people at home; baths, laundry, cooking and the
             background load scale with it (4 is the reference home).
+    temps:  daily high in C, one per day.  The AC runs longer and more often on
+            hotter days and not at all on cool ones; hot days need a little
+            less water heating.  None = every day is the reference 32 C.
+    area_sqft: floor area; a larger home has more lights and fans and takes
+            longer to cool (1000 sq ft is the reference home).
 
     include: appliance keys this home owns; the rest draw nothing.  None = all.
 
@@ -163,6 +175,9 @@ def simulate_home(days: int = 7, seed: int = 0, start: str = "2026-04-01",
         use[k] *= crowd ** 0.7                               # people-driven appliances
     long = lambda minutes, k: max(1, int(round(minutes * min(use[k], 1.6))))
     often = lambda p, k: min(0.98, p * use[k])
+    size = float(np.clip((area_sqft or 1000.0) / 1000.0, 0.4, 3.0))
+    first_day = pd.Timestamp(start).normalize()
+    from weather import cooling_need
 
     traces["fridge"] = _fridge(n, rng, ratings["fridge"],
                                duty=0.75 if "fridge_seal" in faults else 0.40)
@@ -170,6 +185,9 @@ def simulate_home(days: int = 7, seed: int = 0, start: str = "2026-04-01",
     for d in range(days):
         base = d * MIN_PER_DAY
         last_day = d == days - 1
+        heat = cooling_need(temps[d]) if temps is not None and d < len(temps) else 1.0
+        use["geyser"] = use["geyser"] / use.get("_geyser_heat", 1.0) * (1.25 - 0.25 * heat)
+        use["_geyser_heat"] = 1.25 - 0.25 * heat
 
         # Geyser: morning bath, sometimes an evening one
         dur = long(int(rng.integers(15, 35)), "geyser")
@@ -205,18 +223,30 @@ def simulate_home(days: int = 7, seed: int = 0, start: str = "2026-04-01",
 
         # AC: afternoon (sometimes) and night, summer only
         if season == "summer":
-            if rng.random() < often(0.5, "ac"):
-                _place(traces["ac"], base + int(rng.normal(14 * 60, 30)),
-                       _ac_run(long(int(rng.integers(60, 150)), "ac"), rng, ratings["ac"]))
-            if rng.random() < often(0.9, "ac"):
-                _place(traces["ac"], base + int(rng.normal(22 * 60, 30)),
-                       _ac_run(long(int(rng.integers(240, 440)), "ac"), rng, ratings["ac"]))
+            cool = heat * size ** 0.35                      # hotter day or bigger home: more cooling
+            weathered = temps is not None
+            # With real weather the day's heat decides most of it: a hot night
+            # means the AC is on, and for about as long as it is hot.
+            steady = lambda draw, mid: mid + 0.35 * (draw - mid) if weathered else draw
+            weekend = (first_day + pd.Timedelta(days=d)).dayofweek >= 5
+            p_day = (0.85 if weekend else 0.3) if weathered else 0.5
+            p_night = float(np.clip(1.3 * cool - 0.15, 0.0, 0.97)) / 0.9 * 0.9 if weathered else 0.9 * min(1.1, cool * 1.15)
+            if rng.random() < often(p_day, "ac") * min(1.6, cool):
+                minutes = long(steady(int(rng.integers(60, 150)), 105), "ac") * (0.45 + 0.55 * cool)
+                if minutes >= 20:
+                    _place(traces["ac"], base + int(rng.normal(14 * 60, 30)),
+                           _ac_run(int(minutes), rng, ratings["ac"]))
+            if rng.random() < (min(0.98, p_night * use["ac"]) if weathered else often(0.9, "ac") * min(1.1, cool * 1.15)):
+                minutes = long(steady(int(rng.integers(240, 440)), 340), "ac") * (0.45 + 0.55 * cool)
+                if minutes >= 30:
+                    _place(traces["ac"], base + int(rng.normal(22 * 60, 30)),
+                           _ac_run(int(min(minutes, 700)), rng, ratings["ac"]))
 
     if include is not None:
         for key in APPLIANCE_KEYS:
             if key not in include:
                 traces[key] = np.zeros(n)
-    return _assemble(traces, _background(n, rng) * (0.6 + 0.4 * crowd), rng, start, noise_kw)
+    return _assemble(traces, _background(n, rng) * (0.6 + 0.4 * crowd) * size ** 0.3, rng, start, noise_kw)
 
 
 def _assemble(traces: Dict[str, np.ndarray], other: np.ndarray, rng,
@@ -288,6 +318,34 @@ def simulate_random_day(seed: int, start: str = "2026-04-01") -> pd.DataFrame:
             runs.append((begin, begin + length))
         if runs:
             switches[key] = runs
+    return simulate_from_switches(switches, seed=seed, start=start, ratings=random_ratings(rng))
+
+
+_LEFT_ON = {"ac": (400, 1300), "geyser": (60, 600), "washing_machine": (100, 300),
+            "water_pump": (45, 400), "microwave": (15, 180)}
+
+
+def simulate_left_on_day(seed: int, start: str = "2026-04-01") -> pd.DataFrame:
+    """
+    One day where one to three appliances are switched on and left on for far
+    longer than any normal run.  In the app an appliance stays on until the
+    user switches it off, so the model has to recognise this too.
+    """
+    rng = np.random.default_rng(seed)
+    keys = list(rng.choice(list(_LEFT_ON), size=int(rng.integers(1, 4)), replace=False))
+    switches = {}
+    for key in keys:
+        lo, hi = _LEFT_ON[key]
+        length = int(rng.integers(lo, hi + 1))
+        begin = int(rng.integers(0, max(1, MIN_PER_DAY - length)))
+        switches[key] = [(begin, min(MIN_PER_DAY, begin + length))]
+    if rng.random() < 0.5:                                   # some ordinary use alongside
+        other = [k for k in _RANDOM_RUN if k not in switches]
+        key = str(rng.choice(other))
+        _, lo, hi, _ = _RANDOM_RUN[key]
+        length = int(rng.integers(lo, hi + 1))
+        begin = int(rng.integers(0, MIN_PER_DAY - length))
+        switches[key] = [(begin, begin + length)]
     return simulate_from_switches(switches, seed=seed, start=start, ratings=random_ratings(rng))
 
 

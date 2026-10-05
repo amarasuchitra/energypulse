@@ -190,3 +190,58 @@ def test_right_now_only_counts_what_has_happened(home):
     assert abs(late["kwh"] - today["mains_kw"].iloc[:1261].sum() / 60) < 1e-6
     assert late["next_lo"] <= late["next_kw"] <= late["next_hi"] and late["next_days"] >= 7
     assert right_now(pred, APPLIANCE_KEYS, tariff, 23 * 60 + 50)["next_days"] >= 7     # hour that wraps midnight
+
+
+def test_weather_is_repeatable_and_drives_the_air_conditioner():
+    import weather
+    from meter_source import habits_key, scenario_place, with_habits
+    days = pd.date_range("2026-05-01", periods=30)
+    delhi, again = weather.daily_high(days, "Delhi"), weather.daily_high(days, "delhi")
+    assert delhi.equals(again) and not delhi.equals(weather.daily_high(days, "Kochi"))
+    assert weather.daily_high(pd.date_range("2026-05-10", periods=20), "Delhi").mean() \
+        > weather.daily_high(pd.date_range("2026-12-20", periods=20), "Delhi").mean() + 8      # summer vs winter
+    assert abs(weather.forecast_high("2026-05-10", "Delhi") - float(weather.daily_high(["2026-05-10"], "Delhi").iloc[0])) < 4
+    assert weather.cooling_need(20) == 0 and weather.cooling_need(32) == 1 and weather.cooling_need(40) > 1.5
+    hot = simulate_home(days=14, seed=5, temps=[38.0] * 14)
+    mild = simulate_home(days=14, seed=5, temps=[27.0] * 14)
+    cold = simulate_home(days=14, seed=5, temps=[20.0] * 14)
+    assert cold["ac"].sum() == 0 and mild["ac"].sum() < hot["ac"].sum()
+    assert simulate_home(days=14, seed=5, area_sqft=2200)["other_kw"].sum() > simulate_home(days=14, seed=5, area_sqft=600)["other_kw"].sum()
+    home = {"occupants": 3, "home_size": 1400, "city": " New Delhi ", "appliances": []}
+    assert habits_key(home) == ";people=3;size=1400;city=new delhi"
+    assert scenario_place(with_habits("Typical summer home", home)) == ("new delhi", 1400.0)
+    assert scenario_place("Typical summer home") == ("", 1000.0)
+
+
+def test_forecast_follows_temperature_when_weather_is_given():
+    from daily_brief import build_brief
+    days = 26
+    temps = ([26.0] * 3 + [37.0] * 3) * 4 + [26.0, 26.0]     # mild and hot spells; the day before today is mild
+    df = simulate_home(days=days, seed=11, temps=temps, start="2026-05-01")
+    pred = df[["datetime", "mains_kw"]].copy()
+    for key in APPLIANCE_KEYS:
+        pred[f"{key}_kw"], pred[f"{key}_on"] = df[key], df[key] > 0.05
+    pred["other_kw"] = df["other_kw"]
+    series = pd.Series(temps, index=pd.date_range("2026-05-01", periods=days))
+    tariff = Tariff(8.0, tod_enabled=True)
+    ac = lambda b: next(a["kwh"] for a in b["appliances"] if a["key"] == "ac")
+    hot = build_brief(pred, APPLIANCE_KEYS, tariff, temps=series, forecast_temp=38.0)
+    mild = build_brief(pred, APPLIANCE_KEYS, tariff, temps=series, forecast_temp=25.0)
+    plain = build_brief(pred, APPLIANCE_KEYS, tariff)
+    # today follows two mild days: the plain average overshoots, the weather-aware figure does not
+    assert ac(mild) < ac(hot) and ac(mild) < ac(plain) and hot["uses_weather"] and hot["temp_today"] == 38.0
+    assert plain["temp_today"] is None
+    # knowing the temperature makes the replayed forecast less wrong on this home
+    assert build_brief(pred, APPLIANCE_KEYS, tariff, temps=series, forecast_temp=26.0,
+                       temp_forecasts=series)["error_pct"] < plain["error_pct"]
+    parts = sum(a["kwh"] for a in hot["appliances"]) + hot["other_kwh"]
+    assert abs(parts - hot["total_kwh"]) < 0.15
+
+
+def test_appliances_left_on_for_hours_are_still_detected():
+    from disaggregate import MODEL_PATH, Disaggregator, evaluate
+    from meter_sim import simulate_from_switches
+    model = Disaggregator.load(MODEL_PATH)
+    day = simulate_from_switches({"geyser": [(100, 500)], "microwave": [(700, 820)], "ac": [(300, 1300)]}, seed=77)
+    scores = evaluate(model.predict(day[["datetime", "mains_kw"]]), day)
+    assert scores["geyser"]["recall"] > 0.8 and scores["ac"]["recall"] > 0.9 and scores["microwave"]["recall"] > 0.8

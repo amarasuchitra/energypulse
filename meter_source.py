@@ -85,7 +85,12 @@ def habits_key(home_details: Optional[dict]) -> str:
         people = int(hd.get("occupants", 4) or 4)
     except (TypeError, ValueError):
         people = 4
-    return f"{parts};people={people}"
+    try:
+        size = int(hd.get("home_size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    city = "".join(ch for ch in str(hd.get("city") or "").strip().lower() if ch.isalpha() or ch == " ")[:30]
+    return f"{parts};people={people}" + (f";size={size}" if size > 0 else "") + (f";city={city}" if city else "")
 
 
 def with_habits(scenario: str, home_details: Optional[dict]) -> str:
@@ -105,10 +110,27 @@ def split_scenario(scenario: str):
             except ValueError:
                 pass
         try:
-            people = float(tail.replace("people=", "") or 4)
+            people = float(dict(p.partition("=")[::2] for p in tail.split(";")).get("people", 4) or 4)
         except ValueError:
             people = 4.0
     return (name if name in SCENARIOS else list(SCENARIOS)[0]), usage, people
+
+
+def scenario_place(scenario: str):
+    """(city, floor area in sq ft) carried in the scenario key; ('', 1000.0) when not given."""
+    fields = dict(p.partition("=")[::2] for p in str(scenario).partition("||")[2].split(";") if "=" in p)
+    try:
+        size = float(fields.get("size") or 1000.0)
+    except ValueError:
+        size = 1000.0
+    return fields.get("city", ""), size
+
+
+def temperatures(date: str, scenario: str, days: int = HISTORY_DAYS) -> pd.Series:
+    """Simulated daily high for each day of the history that ends on `date` (see weather.py)."""
+    from weather import daily_high
+    start = pd.Timestamp(date) - pd.Timedelta(days=days - 1)
+    return daily_high(pd.date_range(start, periods=days, freq="D"), scenario_place(scenario)[0])
 
 
 @st.cache_data(show_spinner=False)
@@ -118,7 +140,9 @@ def detected_history(date: str, scenario: str, owned: Tuple[str, ...],
     start = pd.Timestamp(date) - pd.Timedelta(days=days - 1)
     name, usage, people = split_scenario(scenario)
     df = simulate_home(days=days, seed=777, start=str(start.date()),
-                       faults=SCENARIOS[name], include=owned, usage=usage, people=people)
+                       faults=SCENARIOS[name], include=owned, usage=usage, people=people,
+                       temps=temperatures(date, scenario, days).tolist(),
+                       area_sqft=scenario_place(scenario)[1])
     pred = get_model().predict(df[["datetime", "mains_kw"]])
     return restrict_to_owned(pred, owned)
 

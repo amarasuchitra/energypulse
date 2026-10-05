@@ -112,13 +112,13 @@ class Disaggregator:
         for k in self.appliances:
             y_on = states[k].to_numpy()
             clf = HistGradientBoostingClassifier(
-                max_iter=150, learning_rate=0.1, max_leaf_nodes=31,
+                max_iter=260, learning_rate=0.1, max_leaf_nodes=47,
                 class_weight="balanced", random_state=self.seed)
             clf.fit(X, y_on)
             self.classifiers[k] = clf
             # Power is learned only from minutes when the appliance was on.
             reg = HistGradientBoostingRegressor(
-                max_iter=150, learning_rate=0.1, max_leaf_nodes=31,
+                max_iter=260, learning_rate=0.1, max_leaf_nodes=47,
                 random_state=self.seed)
             if y_on.sum() > 50:
                 reg.fit(X[y_on], df[k].to_numpy()[y_on])
@@ -285,7 +285,7 @@ def load_labelled_csv(path: str, datetime_col: str, mains_col: str,
 # --------------------------------------------------------------------------
 def train_default(train_homes: int = 16, test_homes: int = 6, days: int = 10,
                   save: bool = True, verbose: bool = True):
-    from meter_sim import simulate_many, simulate_random_day
+    from meter_sim import simulate_home, simulate_left_on_day, simulate_many, simulate_random_day
 
     faults = ["geyser_left_on", "pump_dry_run", "fridge_seal"]
 
@@ -305,10 +305,37 @@ def train_default(train_homes: int = 16, test_homes: int = 6, days: int = 10,
             parts.append(day)
         return pd.concat(parts, ignore_index=True)
 
+    def with_left_on_days(base, n, seed):
+        # Days where something is switched on and left on for hours.
+        parts = [base]
+        for i in range(n):
+            day = simulate_left_on_day(seed + i)
+            day.insert(0, "home", base["home"].max() + 1 + i)
+            parts.append(day)
+        return pd.concat(parts, ignore_index=True)
+
+    def with_varied_homes(base, n, seed):
+        # Heavy and light users, big and small households, hot and mild weeks.
+        rng = np.random.default_rng(seed)
+        parts = [base]
+        for i in range(n):
+            home = simulate_home(
+                days=5, seed=seed + i,
+                usage={k: float(rng.choice([0.6, 1.0, 1.5])) for k in APPLIANCE_KEYS},
+                people=float(rng.integers(1, 8)), area_sqft=float(rng.integers(500, 2400)),
+                temps=list(rng.normal(31, 4, 5)))
+            home.insert(0, "home", base["home"].max() + 1 + i)
+            parts.append(home)
+        return pd.concat(parts, ignore_index=True)
+
     train = with_fault_homes(simulate_many(train_homes, days, seed=1), 16, seed=5)
     train = with_random_days(train, 120, seed=10_000)
+    train = with_left_on_days(train, 110, seed=30_000)
+    train = with_varied_homes(train, 14, seed=50_000)
     test = with_fault_homes(simulate_many(test_homes, days, seed=99), 6, seed=98)  # unseen homes
     test = with_random_days(test, 30, seed=20_000)
+    left_on_test = with_left_on_days(simulate_left_on_day(40_000).assign(home=0), 39, seed=40_001)
+    varied_test = with_varied_homes(simulate_home(days=5, seed=60_000).assign(home=0), 7, seed=60_001)
     model = Disaggregator().fit(train, trained_on=f"{train_homes} simulated homes x {days} days")
 
     learned = evaluate(model.predict(test), test)
@@ -318,10 +345,15 @@ def train_default(train_homes: int = 16, test_homes: int = 6, days: int = 10,
     report = {
         "data": "SIMULATED homes (meter_sim.py). Test homes are different from "
                 "training homes. Real homes will score lower.",
-        "train": f"{train_homes} homes x {days} days plus 120 days of random overlapping use, 1-minute",
+        "train": f"{train_homes} homes x {days} days, 120 days of random overlapping use, 110 days with "
+                 f"appliances left on, and 14 homes with varied habits, 1-minute",
         "test": f"{test_homes} unseen homes x {days} days plus 30 unseen random days, 1-minute",
         "model": learned,
         "edge_baseline": baseline,
+        "left_on_days": evaluate(model.predict(left_on_test), left_on_test),
+        "varied_homes": evaluate(model.predict(varied_test), varied_test),
+        "extra_tests": "left_on_days: 40 unseen days with appliances left on for hours. "
+                       "varied_homes: 8 unseen homes with different habits, sizes and weather.",
     }
     if save:
         model.save()

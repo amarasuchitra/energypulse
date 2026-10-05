@@ -14,6 +14,14 @@ dataset (34,168 hourly rows, December 2006 – November 2010) and a trained
 > meter feed. To use your own readings, upload a CSV — see
 > [Using your own data](#using-your-own-data).
 
+## Weather, household habits and left-on appliances (V4)
+
+- **Weather.** `weather.py` simulates the daily high temperature for the household's city (seasonal curve plus warm and cool spells; the same city and date always give the same value). The simulator runs the air conditioner longer on hotter days and not at all on cool ones. The daily forecast fits AC use to the degrees above 24 C today and yesterday. Measured on the last 14 days of several simulated homes, the forecast error fell from 18-27% to 12-18%.
+- **Home size and city** now change the simulated home (background load, cooling time, climate), along with usage levels and number of people.
+- **Left-on appliances.** The detection model is retrained with days where appliances are left on for hours, and with homes of varied habits and sizes. On-off F1 on unseen simulated homes: fridge 0.98, AC 0.99, geyser 0.99, washing machine 0.92, water pump 0.96, microwave 0.94; on unseen left-on days: 0.97, 0.98, 0.98, 0.88, 0.86, 0.72. Known weak case: a microwave left on for a long time underneath a running geyser is usually missed.
+
+All figures are from simulated homes and simulated weather; real homes will score lower.
+
 ## Household toolkit (V3.9)
 
 Pages that answer the other questions a household has about electricity. The sums are in `toolkit.py` (tested in `test_toolkit.py`), the pages in `toolkit_ui.py`.

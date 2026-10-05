@@ -1132,7 +1132,15 @@ def _render_onboard_step3(od):
 def _brief_cached(date, scenario, owned, rate, tod):
     """Today's per-appliance forecast and savings plan (see daily_brief.py)."""
     try:
-        return build_brief(detected_history(date, scenario, owned), owned, Tariff(rate=rate, tod_enabled=tod))
+        from meter_source import scenario_place, temperatures
+        from weather import forecast_high
+        temps = temperatures(date, scenario)
+        city = scenario_place(scenario)[0]
+        seen = pd.Series({d: forecast_high(d, city) for d in temps.index})
+        brief = build_brief(detected_history(date, scenario, owned), owned, Tariff(rate=rate, tod_enabled=tod),
+                            temps=temps, forecast_temp=float(seen.iloc[-1]), temp_forecasts=seen)
+        brief["city"] = city.title()
+        return brief
     except Exception:
         return None
 
@@ -1220,7 +1228,8 @@ def render_brief_strip(brief):
     st.markdown(
         f"<div class='ep-brief'><span><b>Today's forecast</b> &nbsp;<strong>{brief['total_kwh']:.1f}</strong> units, "
         f"about <strong>Rs. {brief['total_cost']:.0f}</strong></span>"
-        f"<span>off by {brief['error_pct']:.1f}% on recent days</span>"
+        + (f"<span>high of <strong>{brief['temp_today']:.0f}&deg;C</strong> expected</span>" if brief.get("temp_today") is not None else "")
+        + f"<span>off by {brief['error_pct']:.1f}% on recent days</span>"
         + (f"<span><b>Best change today:</b> {top['title']} (about Rs. {top['saving_month']:.0f} a month)</span>" if top else "")
         + "</div>", unsafe_allow_html=True)
 
@@ -1273,6 +1282,11 @@ def render_brief_section(brief):
             for note in brief["notes"][:2]:
                 st.caption(note)
             st.caption("Each figure shows how it was worked out.")
+    if brief.get("temp_today") is not None:
+        st.caption(f"Weather: a high of {brief['temp_today']:.0f} C is expected today"
+                   + (f" in {brief['city']}" if brief.get("city") else "")
+                   + (f"; yesterday reached {brief['temp_yesterday']:.0f} C" if brief.get("temp_yesterday") is not None else "")
+                   + ". The weather is simulated for your city, and the air-conditioner forecast follows the temperature.")
     st.caption(f"Forecast rule: the average of the last 7 days and of the same weekday in the last 4 weeks, from "
                f"{brief['history_days']} days of main-meter history. This notification is sent once a day and is "
                f"kept on the Notifications page.")
