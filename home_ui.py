@@ -250,7 +250,7 @@ def render_home_tab(tariff_rate: float, home_details=None, db=None, household_id
         "household_size": len(people),
     })
     payload["version"] = hashlib.md5(
-        f"{payload['version']}|{theme}|{sorted(state['fans'].items())}|{activity[:1]}|{len(people)}|{[f["key"] for f in switched]}".encode()
+        f"{payload['version']}|{theme}|{sorted(state['fans'].items())}|{activity[:1]}|{len(people)}|{[f['key'] for f in switched]}".encode()
     ).hexdigest()
 
     value = _component(data=payload, key="energy_home", default=None, height=1000)
