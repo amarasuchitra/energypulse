@@ -50,10 +50,14 @@ from appliance_ui import (
 )
 from meter_source import owned_appliances, SOURCE_NOTE, detected_history, today_str
 from appliance_ui import meter_settings
-from auth import Accounts, new_guest_email, is_guest_email, session_expired
+from auth import Accounts, PASSWORD_RULES, new_guest_email, is_guest_email, session_expired
 from motion import notify, runtime as motion_runtime, skeleton
 from integrity import Ledger, store_bill_file, read_bill_file, bill_path, sign_report, verify_report
-from home_ui import render_home_tab
+from home_ui import render_home_tab, _members as household_people
+from daily_brief import build_brief, send_daily_brief
+from meter_source import last_days
+from tariff import Tariff
+from notifications import get_notification_service
 from shell_ui import tc, apply_theme, theme_toggle, current_theme, inject_skin, page_header, sidebar_nav, login_hero, step_list, wordmark
 
 
@@ -833,12 +837,20 @@ def render_login_screen():
             password = st.text_input(T("password_label"), type="password",
                                      placeholder=T("ph_password"), key="login_pw")
             if is_signup:
+                confirm = st.text_input("Confirm password", type="password",
+                                        placeholder="Type the password again", key="login_pw2")
+                st.markdown(
+                    "<div class='ep-pw-rules'><b>Your password must have</b><ul>"
+                    + "".join(f"<li>{label}</li>" for _, label in PASSWORD_RULES)
+                    + "</ul></div>", unsafe_allow_html=True)
                 name = st.text_input(T("name_label"), placeholder=T("ph_name"), key="login_name")
             btn_label = T("btn_create_account") if is_signup else T("btn_sign_in")
             submitted = st.form_submit_button(btn_label, width="stretch", type="primary")
             if submitted:
                 if not email or not password:
                     st.error(T("err_missing"))
+                elif is_signup and password != confirm:
+                    st.error("The two passwords do not match. Type the same password in both boxes.")
                 else:
                     accounts = get_accounts()
                     ok, result = (accounts.sign_up(email, password, name) if is_signup
@@ -849,7 +861,10 @@ def render_login_screen():
                     email = accounts.normalise(email)
                     auth.update({"logged_in": True, "email": email, "name": result,
                                  "guest": False, "signed_in_at": time.time()})
-                    ensure_login(email, name=result)
+                    household = ensure_login(email, name=result)
+                    saved_home = None if is_signup else get_db().get_home_details(household)
+                    if saved_home:
+                        st.session_state.home_details = saved_home      # straight to their own home
                     notify("success", f"Account created. Welcome, {result}." if is_signup else f"Signed in as {result}.")
                     st.rerun()
 
@@ -1063,10 +1078,113 @@ def _render_onboard_step3(od):
                 "peak_morning": (6, 10),
                 "peak_evening": (18, 22),
             }
+            try:
+                get_db().save_home_details(current_household_id(), st.session_state.home_details)
+            except Exception:
+                pass            # the session copy still works; it is just not remembered
+            st.session_state.pop("home_state", None)        # rebuild the 3D home from the new list
             for k in ["onboard_data", "onboard_step"]:
                 if k in st.session_state:
                     del st.session_state[k]
+            notify("success", "Home saved. Every appliance you listed is now in the 3D home.")
             st.rerun()
+
+
+@st.cache_data(show_spinner=False)
+def _brief_cached(date, scenario, owned, rate, tod):
+    """Today's per-appliance forecast and savings plan (see daily_brief.py)."""
+    try:
+        return build_brief(detected_history(date, scenario, owned), owned, Tariff(rate=rate, tod_enabled=tod))
+    except Exception:
+        return None
+
+
+def todays_brief(tariff_rate, owned, household_id, user_name, user_email):
+    """Build today's forecast and, the first time it is seen today, notify the household."""
+    scenario, tod = meter_settings()
+    brief = _brief_cached(today_str(), scenario, tuple(owned), float(tariff_rate), tod)
+    if not brief:
+        return None
+    mark = (household_id, brief["date"])
+    if st.session_state.get("_brief_mark") != mark:
+        st.session_state["_brief_mark"] = mark
+        try:
+            db = get_db()
+            sent = send_daily_brief(db, household_id, household_people(db, household_id, user_name, user_email),
+                                    brief, st.session_state.get("lang", "en"), get_notification_service())
+        except Exception:
+            sent = None
+        if sent:
+            notify("info", sent["subject"] + ". The plan is on the Overview page"
+                   + (" and in your email." if sent["emailed"] else "."))
+    return brief
+
+
+def render_brief_strip(brief):
+    """One line above the 3D home."""
+    if not brief:
+        return
+    top = brief["actions"][0] if brief["actions"] else None
+    st.markdown(
+        f"<div class='ep-brief'><span><b>Today's forecast</b> &nbsp;<strong>{brief['total_kwh']:.1f}</strong> units, "
+        f"about <strong>Rs. {brief['total_cost']:.0f}</strong></span>"
+        f"<span>off by {brief['error_pct']:.1f}% on recent days</span>"
+        + (f"<span><b>Best change today:</b> {top['title']} (about Rs. {top['saving_month']:.0f} a month)</span>" if top else "")
+        + "</div>", unsafe_allow_html=True)
+
+
+def render_brief_section(brief):
+    """Today's prediction and the savings plan, at the top of Overview."""
+    if not brief:
+        return
+    section(f"Today's prediction, {brief['date_label']}")
+    c1, c2, c3, c4 = st.columns(4)
+    metric_card(c1, label="Expected today", value=f"{brief['total_kwh']:.1f}", unit="units",
+                sub=f"likely {brief['low_kwh']:.1f} to {brief['high_kwh']:.1f}")
+    metric_card(c2, label="Expected cost today", value=f"Rs. {brief['total_cost']:.0f}",
+                sub=f"Rs. {brief['low_cost']:.0f} to {brief['high_cost']:.0f}")
+    metric_card(c3, label="Forecast error", value=f"{brief['error_pct']:.1f}", unit="%",
+                sub=f"measured over the last {brief['backtest_days']} days")
+    metric_card(c4, label="Savings found", value=f"Rs. {brief['saving_month']:.0f}", unit="/month",
+                sub=f"out of about Rs. {brief['month_cost']:.0f} a month")
+    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+    left, right = st.columns([1, 1.15], gap="medium")
+    with left:
+        with st.container(border=True):
+            section("Expected use by appliance")
+            biggest = max([a["kwh"] for a in brief["appliances"]] + [brief["other_kwh"], 0.01])
+            rows = "".join(
+                f"<tr><td class='n'>{a['name']}<small>{a['usual'] or 'runs through the day'}</small></td>"
+                f"<td><div class='bar'><span style='width:{100 * a['kwh'] / biggest:.0f}%'></span></div></td>"
+                f"<td class='v'>{a['kwh']:.2f} units<small>Rs. {a['cost']:.1f}</small></td></tr>"
+                for a in brief["appliances"])
+            rows += (f"<tr><td class='n'>Everything else<small>lights, fans, TV, standby</small></td>"
+                     f"<td><div class='bar'><span style='width:{100 * brief['other_kwh'] / biggest:.0f}%'></span></div></td>"
+                     f"<td class='v'>{brief['other_kwh']:.2f} units<small>Rs. {brief['other_cost']:.1f}</small></td></tr>")
+            st.markdown(f"<table class='ep-rows'>{rows}</table>", unsafe_allow_html=True)
+            if brief["yesterday"]:
+                st.caption(f"Yesterday the forecast was {brief['yesterday']['forecast']:.1f} units and the "
+                           f"meter recorded {brief['yesterday']['actual']:.1f}.")
+    with right:
+        with st.container(border=True):
+            section("What to change, biggest saving first")
+            if brief["actions"]:
+                items = "".join(
+                    f"<div class='ep-plan-item'><i>{n}</i><b>{a['title']}</b>"
+                    f"<em>Rs. {a['saving_month']:.0f}/month</em>"
+                    f"<p>{a['detail']}</p><code>{a['calculation']}. About Rs. {a['saving_day']:.1f} a day.</code></div>"
+                    for n, a in enumerate(brief["actions"], 1))
+                st.markdown(f"<div class='ep-plan'>{items}</div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<p style='color:var(--mist);font-size:.86rem'>No change is worth making today. "
+                            "Nothing would save more than Rs. 30 a month.</p>", unsafe_allow_html=True)
+            for note in brief["notes"][:2]:
+                st.caption(note)
+            st.caption("The refrigerator is never told to switch off or move. Each figure shows how it was worked out.")
+    st.caption(f"Forecast rule: the average of the last 7 days and of the same weekday in the last 4 weeks, from "
+               f"{brief['history_days']} days of main-meter history. This notification is sent once a day and is "
+               f"kept on the Notifications page.")
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
 
 PAGES = [("home", "tab_home"), ("overview", "tab_overview"), ("appliances", "tab_appliances"),
@@ -1764,6 +1882,7 @@ def _main_dashboard_inner():
 
     page = st.session_state.get("page", "home")
     owned = owned_appliances(home_details)
+    user_display = st.session_state.auth.get("name") or T("guest_name")
     # A new animation name per page replays the entrance on navigation only,
     # not on the periodic refresh.
     st.markdown(f"<style>@keyframes ep-in-{page} {{ from {{ opacity: 0; transform: translateY(14px); }} "
@@ -1796,6 +1915,7 @@ def _main_dashboard_inner():
     if page == "home":
         head()
         prepare_meter("console")
+        render_brief_strip(todays_brief(tariff_rate, owned, household_id, user_display, auth_email))
         render_home_tab(tariff_rate, home_details, db=get_db(), household_id=household_id,
                         user_name=st.session_state.auth.get("name") or T("guest_name"),
                         user_email=auth_email, theme=current_theme(),
@@ -1805,6 +1925,9 @@ def _main_dashboard_inner():
         head(T("live_label") + " &middot; " + when_text, "")
         for note in missing_notes:
             st.warning(note)
+        prepare_meter("page")
+        render_brief_section(todays_brief(tariff_rate, owned, household_id, user_display, auth_email))
+        section("Whole-home meter, next hour and next month")
         pct_change = week_info.get("pct_change", 0)
         if pct_change > 2:
             week_trend = (T("trend_vs_week", pct=f"+{pct_change:.1f}"), "up")

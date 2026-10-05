@@ -14,6 +14,18 @@ dataset (34,168 hourly rows, December 2006 – November 2010) and a trained
 > meter feed. To use your own readings, upload a CSV — see
 > [Using your own data](#using-your-own-data).
 
+## One flow from sign-up to savings (V3.8)
+
+The app now runs as one connected path:
+
+1. **Sign up with a strong password.** At least 10 characters with upper and lower case, a number and a symbol; common passwords and ones containing the email name are refused, and the password is typed twice (`auth.py`).
+2. **List your appliances once.** The setup is saved per household, so signing in again goes straight to your home (`db.py`, table `household_homes`).
+3. **Everything you listed appears in the 3D home.** The six appliances the detection model knows are found from the meter; anything else (TV, fans, lights, iron, custom items) is drawn in a room and shown from its switch (`devices.py`).
+4. **Every device has a switch and a description.** One list on the Home page; the refrigerator's switch is locked on.
+5. **A daily prediction is sent as a notification.** Expected units and cost for today by appliance, the measured error of the forecast on the last 14 days, and the changes worth making with the arithmetic behind each rupee figure (`daily_brief.py`). It is shown on Home and Overview, kept on the Notifications page, and emailed when email is configured.
+
+The forecast is created the first time the app is opened each day; a free host cannot send it while the app is asleep.
+
 ## Motion and feedback (V3.7)
 
 `motion.py` holds the whole motion system so every page behaves the same way.

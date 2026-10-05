@@ -222,6 +222,18 @@ def render_notifications_tab(db, household_id: str, primary_email: str,
                              history: Optional[pd.DataFrame],
                              forecast_df: Optional[pd.DataFrame]) -> None:
     service = get_notification_service()
+    # The daily forecast is the notification people come here for, so it leads the page.
+    latest = next((e for e in db.get_notification_log(household_id, limit=200)
+                   if e.get("notification_type") == "daily_forecast"), None)
+    if latest:
+        _section("Today's forecast notification")
+        with st.container(border=True):
+            st.markdown(f"**{latest.get('subject') or ''}**")
+            st.text(latest.get("body_text") or "")
+            st.caption("Sent once a day to every household member"
+                       + (" by email and in the app." if latest.get("status") == "sent"
+                          else ". Shown in the app; set up email below to receive it by email too."))
+
     _section(T("notif_title"))
     st.markdown(T("notif_intro"))
 

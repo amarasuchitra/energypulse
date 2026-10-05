@@ -138,8 +138,45 @@ class DatabaseManager:
                 )
             """)
             
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS household_homes (
+                    household_id TEXT PRIMARY KEY,
+                    details_json TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
             conn.commit()
-    
+
+    # ────────────── HOME SETUP (so a returning user lands on their own home) ─────
+    def save_home_details(self, household_id: str, details: Dict[str, Any]) -> None:
+        with self.get_connection() as conn:
+            conn.cursor().execute("""
+                INSERT INTO household_homes (household_id, details_json, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(household_id) DO UPDATE SET
+                    details_json = excluded.details_json, updated_at = CURRENT_TIMESTAMP
+            """, (household_id, json.dumps(details)))
+
+    def get_home_details(self, household_id: str) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT details_json FROM household_homes WHERE household_id = ?",
+                           (household_id,))
+            row = cursor.fetchone()
+        if not row:
+            return None
+        try:
+            details = json.loads(row["details_json"])
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(details, dict):
+            return None
+        for key in ("peak_morning", "peak_evening"):       # JSON turns tuples into lists
+            if isinstance(details.get(key), list):
+                details[key] = tuple(details[key])
+        return details
+
     # ────────────── USER MANAGEMENT ──────────────────────────────
     
     def create_user(self, email: str, name: str, password: str, is_guest: bool = False,

@@ -1080,6 +1080,7 @@ _FEATURE_TRANSLATIONS = {
         "notif_type_optimization_tip": "Optimization tip",
         "notif_type_test": "Test",
         "notif_type_appliance_switch": "Appliance switched",
+        "notif_type_daily_forecast": "Daily forecast",
         "notif_status_sent": "sent",
         "notif_status_failed": "failed",
         "chat_no_prior_week": "There isn't enough measured data from before the last 7 days to compare against, so no comparison was invented.",
@@ -1208,6 +1209,7 @@ _FEATURE_TRANSLATIONS = {
         "notif_type_optimization_tip": "बचत सुझाव",
         "notif_type_test": "परीक्षण",
         "notif_type_appliance_switch": "उपकरण चालू/बंद",
+        "notif_type_daily_forecast": "दैनिक पूर्वानुमान",
         "notif_status_sent": "भेजा गया",
         "notif_status_failed": "विफल",
         "chat_no_prior_week": "पिछले 7 दिनों से पहले का पर्याप्त मापा डेटा नहीं है, इसलिए कोई तुलना आविष्कार नहीं की गई।",
@@ -1336,6 +1338,7 @@ _FEATURE_TRANSLATIONS = {
         "notif_type_optimization_tip": "ಉಳಿತಾಯ ಸಲಹೆ",
         "notif_type_test": "ಪರೀಕ್ಷೆ",
         "notif_type_appliance_switch": "ಉಪಕರಣ ಆನ್/ಆಫ್",
+        "notif_type_daily_forecast": "ದೈನಂದಿನ ಮುನ್ಸೂಚನೆ",
         "notif_status_sent": "ಕಳುಹಿಸಲಾಗಿದೆ",
         "notif_status_failed": "ವಿಫಲ",
         "chat_no_prior_week": "ಕಳೆದ 7 ದಿನಗಳ ಹಿಂದಿನ ಸಾಕಷ್ಟು ಅಳತೆ ಡೇಟಾ ಇಲ್ಲ, ಆದ್ದರಿಂದ ಯಾವುದೇ ಹೋಲಿಕೆಯನ್ನು ನಿರ್ಮಿಸಲಾಗಿಲ್ಲ.",
@@ -1464,6 +1467,7 @@ _FEATURE_TRANSLATIONS = {
         "notif_type_optimization_tip": "ఆదా సూచన",
         "notif_type_test": "పరీక్ష",
         "notif_type_appliance_switch": "ఉపకరణం ఆన్/ఆఫ్",
+        "notif_type_daily_forecast": "రోజువారీ అంచనా",
         "notif_status_sent": "పంపబడింది",
         "notif_status_failed": "విఫలం",
         "chat_no_prior_week": "గత 7 రోజులకు ముందు తగినంత కొలిచిన డేటా లేదు, కాబట్టి ఎటువంటి పోలిక రూపొందించలేదు.",
@@ -1534,6 +1538,7 @@ NOTIFICATION_TYPE_KEY = {
     "optimization_tip": "notif_type_optimization_tip",
     "test": "notif_type_test",
     "appliance_switch": "notif_type_appliance_switch",
+    "daily_forecast": "notif_type_daily_forecast",
 }
 
 

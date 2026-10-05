@@ -288,3 +288,12 @@ body { position: relative; }
   *, *::before, *::after { animation: none !important; transition-duration: .01ms !important; }
 }
 @media (max-width: 980px) { .loading { grid-template-columns: 1fr; } .loading .s-side { display: none; } }
+
+/* one list: every device carries a description and a switch */
+.quick:empty { display: none; }
+#list li.group { display: block; padding: 10px 8px 4px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--faint); cursor: default; }
+#list li.group:hover { background: none; transform: none; }
+#list li.group:first-child { padding-top: 2px; }
+#list li:not(.group) { cursor: pointer; }
+.desc { font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -23,7 +23,7 @@ const S = {
   data: null, version: null, playhead: 0, playing: true, speed: 1,
   selected: null, mode: "live", switches: {}, pending: false,
   prefix: {}, lastPanel: 0, lastMinute: -1, pulseAt: 0,
-  fans: {}, fanKwh: 0, fanCost: 0, member: null, lastActivity: null, hover: null, colors: {},
+  fans: {}, fanKwh: 0, fanCost: 0, devKwh: {}, devCost: {}, member: null, lastActivity: null, hover: null, colors: {},
 };
 const SPEEDS = [["1 min/s", 1], ["5 min/s", 5], ["20 min/s", 20]];
 const INTRO_SEC = 1.9;      // one opening move: the model rises and the camera settles
@@ -39,6 +39,12 @@ const ICONS = {
   washing_machine: '<path d="M5 3h14v18H5z"/><circle cx="12" cy="13.5" r="4"/><path d="M8 6h.01M11 6h.01"/>',
   water_pump: '<circle cx="10" cy="13" r="5"/><path d="M15 13h5v-4M10 8V4h4M10 13h.01"/>',
   microwave: '<path d="M3 6h18v12H3z"/><path d="M6 9h9v6H6zM18 9v.01M18 12v.01M18 15v.01"/>',
+};
+const KIND_ICONS = {
+  fan: FAN_ICON,
+  light: '<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.3 1 2.5h6c0-1.2.3-1.8 1-2.5A6 6 0 0 0 12 3z"/>',
+  tv: '<path d="M3 5h18v12H3zM8 21h8M12 17v4"/>',
+  generic: '<path d="M9 3v5M15 3v5M6 8h12v4a6 6 0 0 1-12 0zM12 18v3"/>',
 };
 const icon = (key) =>
   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[key] || ""}</svg>`;
@@ -203,25 +209,52 @@ function lamp(x, z, base, reach) {
 }
 lamp(6.25, 4.4, 1.0, 5); lamp(3.97, 6.47, 0.42, 3.5);
 
-// ceiling fans: switched by hand, drawn spinning when on
+// switched devices (fans, lights, TV, anything else the household listed):
+// built from the list Python sends, drawn glowing or spinning when on
 const fanUnits = {};
-function buildFan(key, x, z) {
-  const g = new THREE.Group();
+function buildDevice(f) {
+  const [x, z] = f.pos, g = new THREE.Group();
   const body = tm("appliance", { roughness: 0.5 });
-  cyl(0.018, 0.4, x, 1.72, z, body, g);
-  cyl(0.1, 0.08, x, 1.5, z, body, g);
-  const rotor = new THREE.Group();
-  rotor.position.set(x + OX, 1.48, z + OZ);
-  for (let i = 0; i < 3; i++) {
-    const arm = new THREE.Group(); arm.rotation.y = (i * Math.PI * 2) / 3;
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.014, 0.13), body);
-    blade.position.x = 0.4; blade.castShadow = true; arm.add(blade); rotor.add(arm);
+  const u = { group: g, kind: f.kind, speed: 0, glow: 0, lightMax: 0 };
+  const glowMat = (color, emissive) => new THREE.MeshStandardMaterial({ color, emissive, emissiveIntensity: 0, roughness: 0.45 });
+  const addLight = (color, lx, ly, lz, reach, max) => {
+    u.light = new THREE.PointLight(color, 0, reach, 1.6); u.lightMax = max;
+    u.light.position.set(lx + OX, ly, lz + OZ); scene.add(u.light);
+  };
+  if (f.kind === "fan") {
+    cyl(0.018, 0.4, x, 1.72, z, body, g);
+    cyl(0.1, 0.08, x, 1.5, z, body, g);
+    const rotor = new THREE.Group();
+    rotor.position.set(x + OX, 1.48, z + OZ);
+    for (let i = 0; i < 3; i++) {
+      const arm = new THREE.Group(); arm.rotation.y = (i * Math.PI * 2) / 3;
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.014, 0.13), body);
+      blade.position.x = 0.4; blade.castShadow = true; arm.add(blade); rotor.add(arm);
+    }
+    g.add(rotor); u.rotor = rotor;
+    u.anchor = new THREE.Vector3(x + OX, 2.0, z + OZ);
+  } else if (f.kind === "light") {
+    cyl(0.012, 0.3, x, 1.75, z, body, g);
+    u.mat = glowMat(0xd9dce6, 0xffd9a0);
+    cyl(0.2, 0.07, x, 1.57, z, u.mat, g).castShadow = false;
+    addLight(0xffd9a0, x, 1.38, z, 5.5, 7);
+    u.anchor = new THREE.Vector3(x + OX, 1.98, z + OZ);
+  } else if (f.kind === "tv") {
+    u.mat = glowMat(0x10131c, 0x7fb4ff);
+    box(1.42, 0.67, 0.02, x - 0.71, 0.54, z - 0.005, u.mat, g).castShadow = false;
+    addLight(0x7fb4ff, x, 0.9, z + 0.7, 3.5, 4);
+    u.anchor = new THREE.Vector3(x + OX, 1.5, z + 0.1 + OZ);
+  } else {
+    box(0.46, 0.5, 0.46, x - 0.23, 0.04, z - 0.23, tm("furn"), g);
+    u.mat = glowMat(0xd9dce6, AMBER);
+    box(0.34, 0.26, 0.3, x - 0.17, 0.54, z - 0.15, u.mat, g);
+    addLight(AMBER, x, 1.0, z, 3, 3.5);
+    u.anchor = new THREE.Vector3(x + OX, 1.2, z + OZ);
   }
-  g.add(rotor); scene.add(g);
-  g.traverse((o) => { o.userData.key = key; });
-  fanUnits[key] = { group: g, rotor, speed: 0, anchor: new THREE.Vector3(x + OX, 2.0, z + OZ) };
+  scene.add(g);
+  g.traverse((o) => { o.userData.key = f.key; });
+  fanUnits[f.key] = u;
 }
-buildFan("fan_living", 3.3, 2.75); buildFan("fan_bedroom", 2.5, 7.4);
 
 function applyTheme(name) {
   P = PALETTE[name] || PALETTE.dark;
@@ -336,7 +369,11 @@ function makePin(key, label, extra = "") {
   el.type = "button"; el.className = `pin ${extra}`;
   el.innerHTML = `<span class="dot">${icon(key)}</span><span class="v"></span>`;
   el.setAttribute("aria-label", label);
-  el.addEventListener("click", () => (isFan(key) ? toggleFan(key) : key !== "meter" && select(key)));
+  el.addEventListener("click", () => {
+    if (key === "meter") return;
+    select(key);
+    if (isFan(key)) toggleFan(key);
+  });
   el.addEventListener("pointerenter", (e) => showTip(key, e.clientX, e.clientY));
   el.addEventListener("pointerleave", () => showTip(null));
   pinsEl.appendChild(el);
@@ -364,12 +401,13 @@ function pick(e) {
   const r = canvas.getBoundingClientRect();
   ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
   const targets = [...Object.values(units).filter((u) => u.group.visible).map((u) => u.group),
-                   ...Object.values(fanUnits).map((f) => f.group), meterBody];
+                   ...Object.values(fanUnits).filter((f) => f.group.visible).map((f) => f.group), meterBody];
   const hit = ray.intersectObjects(targets, true)[0];
   return hit ? hit.object.userData.key : null;
 }
 const fanKw = () => (S.data ? S.data.fans.reduce((sum, f) => sum + (S.fans[f.key] ? f.kw : 0), 0) : 0);
 const isFan = (key) => !!fanUnits[key];
+const devByKey = (key) => (S.data ? S.data.fans.find((f) => f.key === key) : null);
 
 // What the pointer is over: is it on, what it is, and its figures.
 function describe(key) {
@@ -383,14 +421,15 @@ function describe(key) {
     const f = d.fans.find((x) => x.key === key), on = !!S.fans[key];
     return `<b>${f.name}</b><span class="what">${f.product}</span>
       <span class="${on ? "on" : "off"}">${on ? `On, ${(f.kw * 1000).toFixed(0)} W` : "Off"}</span>
-      <span>Click to switch it ${on ? "off" : "on"}. Too small to be detected from the meter, so it is shown from its switch.</span>`;
+      <span>${f.room}. Click to switch it ${on ? "off" : "on"}.</span>
+      <span>This session: ${(S.devKwh[key] || 0).toFixed(3)} units, ${rs(S.devCost[key] || 0)}</span>`;
   }
   const a = byKey(key); if (!a) return "";
   const on = !!a.on[m], p = S.prefix[key];
   const status = on ? `On, ${a.kw[m].toFixed(2)} kW` : a.locked ? "Always on, compressor resting" : "Off";
   return `<b>${a.name}</b><span class="what">${a.product}</span>
     <span class="${on ? "on" : "off"}" style="--c:${a.color}">${status}</span>
-    <span>Rated ${a.rated_kw} kW. ${a.category_label}.</span>
+    <span>Rated ${a.rated_kw} kW. ${a.category_label}. ${a.locked ? "Cannot be switched off." : "Click, then use its switch in the list."}</span>
     <span>Today: ${dur(p.on[m + 1])} running, ${p.kwh[m + 1].toFixed(2)} units, ${rs(p.cost[m + 1])}</span>`;
 }
 function showTip(key, clientX, clientY) {
@@ -412,7 +451,7 @@ canvas.addEventListener("pointerdown", (e) => { down = [e.clientX, e.clientY]; s
 canvas.addEventListener("pointerup", (e) => {
   if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 5) return;
   const key = pick(e);
-  if (isFan(key)) toggleFan(key);
+  if (isFan(key)) { select(key); toggleFan(key); }
   else if (key && key !== "meter") select(key);
 });
 
@@ -466,7 +505,15 @@ function load(data) {
   S.colors = Object.fromEntries(["plaster", "mist", "faint", "current", "lane"].map((k) => [k, css.getPropertyValue(`--${k}`).trim()]));
   ringMat.color.setHex(P.ring);
   for (const f of data.fans) {
+    ICONS[f.key] = KIND_ICONS[f.kind] || KIND_ICONS.generic;
+    if (!fanUnits[f.key]) buildDevice(f);
     if (!pins[f.key]) { makePin(f.key, f.name); pins[f.key].style.setProperty("--c", "var(--current)"); }
+  }
+  for (const [key, u] of Object.entries(fanUnits)) {
+    const has = data.fans.some((f) => f.key === key);
+    u.group.visible = has;
+    if (!has && u.light) u.light.intensity = 0;
+    if (pins[key]) pins[key].style.display = has ? "" : "none";
   }
   if (first) S.fans = { ...(data.fan_state || {}) };
   const sel = $("member");
@@ -490,7 +537,8 @@ function load(data) {
     if (!has) { u.light.intensity = 0; u.ring.visible = false; u.dots.forEach((d) => { d.visible = false; }); }
     if (pins[key]) pins[key].style.display = has ? "" : "none";
   }
-  if (!data.appliances.some((a) => a.key === S.selected)) S.selected = data.appliances[0].key;
+  if (!data.appliances.some((a) => a.key === S.selected) && !data.fans.some((f) => f.key === S.selected))
+    S.selected = data.appliances[0].key;
 
   if (first || data.source.real) S.playhead = data.source.real ? data.live_edge - 1 : data.start_minute;
   if (first && data.appliances.some((a) => a.key === "ac")) S.selected = "ac";
@@ -499,15 +547,15 @@ function load(data) {
   $("source").textContent = data.source.label;
   $("source").classList.toggle("is-real", !!data.source.real);
   $("hint").textContent = S.mode === "test"
-    ? "Switch appliances on in the list. The model sees only the meter total and has to find them."
-    : "Glowing appliances are what the meter reading gives away. Drag to turn the model.";
+    ? "You are switching the appliances. The model sees only the meter total and has to find them."
+    : "Glowing appliances are what the meter reading gives away. Every device has a switch in the list.";
   document.querySelectorAll(".seg [data-mode]").forEach((b) => b.classList.toggle("is-on", b.dataset.mode === S.mode));
   $("speeds").style.display = data.source.real ? "none" : "";
   $("play").style.display = data.source.real ? "none" : "";
   const tlH = TOP + 12 + data.appliances.length * (LANE + GAP);
   $("activity").innerHTML = data.activity.length
     ? data.activity.slice(0, 4).map((x) => `<li><time>${x.time}</time>${x.text}</li>`).join("")
-    : "<li>Nothing switched yet. Switch a fan to see it appear here for the whole household.</li>";
+    : "<li>Nothing switched yet. Switch any device to see it appear here for the whole household.</li>";
   $("timeline").style.height = `${tlH}px`;
   buildList(); S.lastMinute = -1; S.lastPanel = 0;
   if (first) {
@@ -525,36 +573,26 @@ function select(key) {
 // ================================================================= PANEL
 function buildList() {
   const ul = $("list"); ul.innerHTML = "";
-  for (const a of S.data.appliances) {
+  const group = (text) => { const li = document.createElement("li"); li.className = "group"; li.textContent = text; ul.appendChild(li); };
+  const row = (key, name, desc, color, onSwitch, locked) => {
     const li = document.createElement("li");
-    li.dataset.key = a.key; li.style.setProperty("--c", a.color);
-    li.innerHTML = `<span class="badge">${icon(a.key)}</span>
-      <div><div class="name">${a.name}</div><div class="state"></div></div>
-      <div class="right"></div>`;
-    li.addEventListener("click", () => select(a.key));
-    if (S.mode === "test") {
-      const sw = document.createElement("button");
-      sw.type = "button"; sw.className = "switch"; sw.setAttribute("role", "switch");
-      sw.setAttribute("aria-label", `Switch ${a.name} ${a.locked ? "(always on)" : ""}`);
-      if (a.locked) { sw.disabled = true; sw.title = "Always on. It cannot be switched off, even in test mode."; }
-      sw.addEventListener("click", (e) => { e.stopPropagation(); toggle(a.key); });
-      li.querySelector(".right").replaceWith(sw);
-    }
-    ul.appendChild(li);
-  }
-  const quick = $("quick"); quick.innerHTML = "";
-  for (const f of S.data.fans) {
-    const chip = document.createElement("div");
-    chip.className = "chip"; chip.dataset.key = f.key;
-    chip.innerHTML = `<span class="badge">${icon(f.key)}</span>
-      <div><div class="name">${f.name}</div><div class="state"></div></div>`;
+    li.dataset.key = key; li.style.setProperty("--c", color);
+    li.innerHTML = `<span class="badge">${icon(key)}</span>
+      <div><div class="name">${name}</div><div class="desc">${desc}</div><div class="state"></div></div>`;
+    li.addEventListener("click", () => select(key));
     const sw = document.createElement("button");
     sw.type = "button"; sw.className = "switch"; sw.setAttribute("role", "switch");
-    sw.setAttribute("aria-label", `Switch ${f.name}`);
-    sw.addEventListener("click", () => toggleFan(f.key));
-    chip.appendChild(sw);
-    quick.appendChild(chip);
-  }
+    sw.setAttribute("aria-label", `Switch ${name}${locked ? " (always on)" : ""}`);
+    if (locked) { sw.disabled = true; sw.title = "Always on. It must not be switched off."; }
+    sw.addEventListener("click", (e) => { e.stopPropagation(); select(key); onSwitch(); });
+    li.appendChild(sw);
+    ul.appendChild(li);
+  };
+  group("Found from the main meter");
+  for (const a of S.data.appliances) row(a.key, a.name, a.product, a.color, () => toggle(a.key), a.locked);
+  if (S.data.fans.length) group("Shown from their switch");
+  for (const f of S.data.fans) row(f.key, f.name, `${f.product}, ${f.room.toLowerCase()}`, "var(--fill)", () => toggleFan(f.key), false);
+  $("quick").innerHTML = "";
   select(S.selected);
 }
 
@@ -583,7 +621,16 @@ function userOn(key, m) {             // test mode: what the user asked for
 }
 
 function toggle(key) {
-  const m = Math.floor(S.playhead), list = (S.switches[key] = S.switches[key] || []);
+  const m = Math.floor(S.playhead);
+  if (S.mode !== "test") {
+    // Taking over from the replay: start from what is running right now.
+    S.switches = {};
+    for (const a of S.data.appliances) {
+      if (!a.locked && a.on[m]) S.switches[a.key] = [[m, Math.min(S.data.mains.length, m + (TEST_RUN_MIN[a.key] || 30))]];
+    }
+    toast("You are now switching the appliances yourself (Test mode). The model has to find them from the meter total.", "info");
+  }
+  const list = (S.switches[key] = S.switches[key] || []);
   const live = list.find(([s, e]) => m >= s && m < e);
   if (live) { live[1] = m; if (live[1] <= live[0]) list.splice(list.indexOf(live), 1); }
   else list.push([m, Math.min(S.data.mains.length, m + (TEST_RUN_MIN[key] || 30))]);
@@ -634,7 +681,6 @@ function updatePanel(m) {
     const state = li.querySelector(".state");
     if (S.mode === "test") {
       const asked = userOn(a.key, m), truth = a.truth ? !!a.truth[m] : asked;
-      li.querySelector(".switch").setAttribute("aria-checked", String(asked));
       if (truth) { running++; if (on) found++; }
       state.textContent = a.locked ? (on ? "Always on, detected" : "Always on, compressor resting")
         : asked ? (on ? `Detected, ${a.kw[m].toFixed(2)} kW` : "On, not detected yet")
@@ -642,20 +688,31 @@ function updatePanel(m) {
     } else {
       state.textContent = on ? `On, ${a.kw[m].toFixed(2)} kW`
         : a.locked ? "Always on, compressor resting" : "Off";
-      li.querySelector(".right").innerHTML = `<b>${rs(p.cost[m + 1])}</b>${dur(p.on[m + 1])}`;
+      state.textContent += ` \u00b7 ${rs(p.cost[m + 1])} today`;
     }
+    li.querySelector(".switch").setAttribute("aria-checked",
+      String(a.locked || (S.mode === "test" ? userOn(a.key, m) : on)));
   }
   for (const f of d.fans) {
-    const li = document.querySelector(`#quick [data-key="${f.key}"]`), on = !!S.fans[f.key];
+    const li = document.querySelector(`#list li[data-key="${f.key}"]`), on = !!S.fans[f.key];
+    if (!li) continue;
     li.classList.toggle("is-on", on);
     li.querySelector(".switch").setAttribute("aria-checked", String(on));
-    li.querySelector(".state").textContent = on ? `On, ${(f.kw * 1000).toFixed(0)} W` : "Off";
+    li.querySelector(".state").textContent = on
+      ? `On, ${(f.kw * 1000).toFixed(0)} W \u00b7 ${rs(S.devCost[f.key] || 0)} this session` : "Off";
   }
   $("score").textContent = S.mode === "test"
-    ? (running ? `Found ${found} of ${running} drawing power` : "Nothing switched on") : "cost and run time today";
+    ? (running ? `Found ${found} of ${running} drawing power` : "Nothing switched on") : "state and cost today";
 
   // selected appliance
-  const a = byKey(S.selected), p = S.prefix[a.key];
+  const a = byKey(S.selected);
+  if (!a) {
+    const f = devByKey(S.selected), on = !!S.fans[f.key];
+    $("detail").innerHTML = `<h3>${f.name}</h3><div class="kind">${f.description}</div>
+      <p>${on ? `On now, drawing ${(f.kw * 1000).toFixed(0)} W.` : "Off now."} This session: ${(S.devKwh[f.key] || 0).toFixed(3)} units, ${rs(S.devCost[f.key] || 0)}.</p>
+      <p class="never">Left on for 8 hours a day it would use about ${(f.kw * 8 * 30).toFixed(1)} units a month, about ${rs(f.kw * 8 * 30 * d.rates[m])}. Its load is added to the meter reading while it is on.</p>`;
+  } else {
+  const p = S.prefix[a.key];
   let html = `<h3>${a.name}</h3><div class="kind">${a.product}. ${a.category_label}. ${a.note}</div>
     <p>Today so far: ${dur(p.on[m + 1])} drawing power, ${p.kwh[m + 1].toFixed(2)} units, ${rs(p.cost[m + 1])}.</p>`;
   if (a.tips.length) {
@@ -664,6 +721,7 @@ function updatePanel(m) {
     html += `<p class="never">${a.no_tip}</p>`;
   }
   $("detail").innerHTML = html;
+  }
 
   // long-run alert
   const al = d.alerts.find((x) => m >= x.warn_at && m <= x.end + 20);
@@ -808,16 +866,27 @@ function frame(now) {
     // fans: spin, pin, and their share of the meter reading
     const extra = fanKw();
     if (S.fanMinute !== undefined && m > S.fanMinute && m - S.fanMinute <= 30) {
-      const kwh = (extra * (m - S.fanMinute)) / 60;
-      S.fanKwh += kwh; S.fanCost += kwh * d.rates[m];
+      for (const f of d.fans) {
+        if (!S.fans[f.key]) continue;
+        const kwh = (f.kw * (m - S.fanMinute)) / 60, cost = kwh * d.rates[m];
+        S.devKwh[f.key] = (S.devKwh[f.key] || 0) + kwh; S.devCost[f.key] = (S.devCost[f.key] || 0) + cost;
+        S.fanKwh += kwh; S.fanCost += cost;
+      }
     }
     S.fanMinute = m;
     for (const f of d.fans) {
       const u = fanUnits[f.key], on = !!S.fans[f.key];
-      u.speed += ((on ? 11 : 0) - u.speed) * Math.min(1, dt * 1.8);
-      if (!reduceMotion) u.rotor.rotation.y -= u.speed * dt;
+      if (!u) continue;
+      u.glow += ((on ? 1 : 0) - u.glow) * Math.min(1, dt * 5);
+      if (u.rotor) {
+        u.speed += ((on ? 11 : 0) - u.speed) * Math.min(1, dt * 1.8);
+        if (!reduceMotion) u.rotor.rotation.y -= u.speed * dt;
+      }
+      if (u.mat) u.mat.emissiveIntensity = u.glow * (u.kind === "tv" ? 0.9 : 1.3);
+      if (u.light) u.light.intensity = u.glow * u.lightMax * (P === PALETTE.light ? 0.5 : 1);
       const pin = pins[f.key];
       pin.classList.toggle("is-on", on);
+      pin.classList.toggle("is-selected", f.key === S.selected);
       pin.querySelector(".v").textContent = on ? `${(f.kw * 1000).toFixed(0)} W` : "";
       place(pin, u.anchor, true);
     }

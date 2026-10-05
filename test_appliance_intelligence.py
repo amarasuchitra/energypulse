@@ -219,24 +219,24 @@ def test_accounts_only_let_the_owner_in(tmp_path, monkeypatch):
     accounts = auth.Accounts(db_path=str(tmp_path / "a.db"))
     assert not accounts.sign_up("not-an-email", "longenough1")[0]
     assert not accounts.sign_up("amara@example.com", "short")[0]
-    assert accounts.sign_up("Amara@Example.com", "correct horse 9", "Amara") == (True, "Amara")
+    assert accounts.sign_up("Amara@Example.com", "Correct-Horse 9", "Amara") == (True, "Amara")
     # a second person cannot claim the same email, however it is typed
-    assert not accounts.sign_up(" amara@example.com ", "another password")[0]
-    assert accounts.sign_in("amara@example.com", "correct horse 9") == (True, "Amara")
+    assert not accounts.sign_up(" amara@example.com ", "Another-Pass 77")[0]
+    assert accounts.sign_in("amara@example.com", "Correct-Horse 9") == (True, "Amara")
     assert not accounts.sign_in("amara@example.com", "wrong")[0]
-    assert not accounts.sign_in("nobody@example.com", "correct horse 9")[0]
+    assert not accounts.sign_in("nobody@example.com", "Correct-Horse 9")[0]
 
     # the password itself is not in the database
     import sqlite3
     with sqlite3.connect(str(tmp_path / "a.db")) as conn:
         stored = " ".join(map(str, conn.execute("SELECT * FROM credentials").fetchone()))
-    assert "correct horse 9" not in stored
+    assert "Correct-Horse 9" not in stored
 
     # repeated wrong passwords lock the account, even for the right password
     for _ in range(auth.MAX_FAILURES):
         accounts.sign_in("amara@example.com", "wrong", now=1000.0)
-    assert "Too many" in accounts.sign_in("amara@example.com", "correct horse 9", now=1001.0)[1]
-    assert accounts.sign_in("amara@example.com", "correct horse 9", now=1000.0 + auth.LOCK_SECONDS + 1)[0]
+    assert "Too many" in accounts.sign_in("amara@example.com", "Correct-Horse 9", now=1001.0)[1]
+    assert accounts.sign_in("amara@example.com", "Correct-Horse 9", now=1000.0 + auth.LOCK_SECONDS + 1)[0]
 
     # guests are private, sessions end, stored files are unreadable without the key
     assert auth.new_guest_email() != auth.new_guest_email()
@@ -245,3 +245,83 @@ def test_accounts_only_let_the_owner_in(tmp_path, monkeypatch):
     blob = auth.protect(b"consumer no. 12345, amount 1840")
     assert b"12345" not in blob and auth.unprotect(blob) == b"consumer no. 12345, amount 1840"
     assert auth.unprotect(blob[:-4] + b"abcd") is None
+
+
+def test_weak_passwords_are_refused(tmp_path):
+    import auth
+    accounts = auth.Accounts(db_path=str(tmp_path / "p.db"))
+    weak = ["short1!A", "alllowercase12!", "ALLUPPERCASE12!", "NoDigitsHere!!", "NoSymbols12345",
+            "Password123!", "Amara-2026-xyz", "Aaaaaaaaa1!"]
+    for password in weak:
+        ok, why = accounts.sign_up("amara@example.com", password)
+        assert not ok and "stronger password" in why, password
+    assert auth.password_problems("Tr4il-Mango-Kettle") == []
+    assert accounts.sign_up("amara@example.com", "Tr4il-Mango-Kettle")[0]
+
+
+def test_every_listed_appliance_reaches_the_home():
+    from devices import household_devices
+    from appliance_profiles import APPLIANCE_KEYS
+    listed = [{"name": "Air Conditioner", "type": "Cooling"}, {"name": "Refrigerator", "type": "Kitchen"},
+              {"name": "Television", "type": "Electronics"}, {"name": "Lights & Fans", "type": "Lighting"},
+              {"name": "Iron box", "type": "Other"}, {"name": "Thingamajig", "type": "Other"}]
+    owned, switched, notes = household_devices({"appliances": listed})
+    assert owned == ("fridge", "ac")
+    names = " ".join(d["name"].lower() for d in switched)
+    for word in ["television", "living room fan", "bedroom fan", "living room lights", "iron box", "thingamajig"]:
+        assert word in names
+    # every switched device can be drawn, described and switched; no two share a place
+    assert all(d["kind"] in {"fan", "light", "tv", "generic"} and d["description"] and d["kw"] > 0 for d in switched)
+    assert len({d["key"] for d in switched}) == len(switched)
+    assert len({(d["kind"], tuple(d["pos"])) for d in switched}) == len(switched)
+    # nothing listed: the demo home, never an empty one
+    demo_owned, demo_switched, _ = household_devices(None)
+    assert set(demo_owned) == set(APPLIANCE_KEYS) and {d["key"] for d in demo_switched} == {"fan_living", "fan_bedroom"}
+    # only undetectable items listed: says so, and keeps the meter meaningful
+    owned2, switched2, notes2 = household_devices({"appliances": [{"name": "Television", "type": "Electronics"}]})
+    assert owned2 and switched2[0]["kind"] == "tv" and notes2
+
+
+def test_home_setup_is_remembered(tmp_path):
+    from db import DatabaseManager
+    db = DatabaseManager(db_path=str(tmp_path / "h.db"))
+    assert db.get_home_details("house-1") is None
+    details = {"appliances": [{"name": "Microwave", "type": "Kitchen"}], "tariff_rate": 7.5, "peak_morning": (6, 10)}
+    db.save_home_details("house-1", details)
+    assert db.get_home_details("house-1") == details
+    assert db.get_home_details("house-2") is None            # another household sees nothing
+    db.save_home_details("house-1", {"appliances": []})
+    assert db.get_home_details("house-1") == {"appliances": []}
+
+
+def test_daily_forecast_is_measured_precise_and_sent_once(faulty, tmp_path):
+    from daily_brief import NOTIFICATION_TYPE, brief_text, build_brief, send_daily_brief
+    from db import DatabaseManager
+    from appliance_profiles import APPLIANCE_KEYS
+    pred, tariff = faulty[1], Tariff(8.0, tod_enabled=True)
+    brief = build_brief(pred, APPLIANCE_KEYS, tariff)
+    # the appliance figures and everything else add up to the day's total
+    parts = sum(a["kwh"] for a in brief["appliances"]) + brief["other_kwh"]
+    assert abs(parts - brief["total_kwh"]) < 0.15
+    assert brief["low_kwh"] <= brief["total_kwh"] <= brief["high_kwh"]
+    assert brief["backtest_days"] >= 2 and 0 <= brief["error_pct"] < 40
+    # the forecast never looks at today: changing today's readings leaves it unchanged
+    tampered = pred.copy()
+    last_day = pd.to_datetime(tampered["datetime"]).dt.normalize() == pd.to_datetime(tampered["datetime"]).dt.normalize().iloc[-1]
+    for col in [c for c in tampered.columns if c.endswith("_kw")]:
+        tampered.loc[last_day, col] = tampered.loc[last_day, col] * 3
+    assert build_brief(tampered, APPLIANCE_KEYS, tariff)["total_kwh"] == brief["total_kwh"]
+    # every action carries its arithmetic and obeys the appliance category
+    for action in brief["actions"]:
+        assert action["calculation"] and action["saving_month"] >= 30
+        assert "switch off" not in action["title"].lower() or action["appliance"] != "fridge"
+    subject, body = brief_text(brief)
+    assert f"{brief['total_kwh']:.1f} units" in subject and "By appliance" in body
+    # sent once per household per day, to every member
+    db = DatabaseManager(db_path=str(tmp_path / "n.db"))
+    people = [{"name": "Amara", "email": "amara@example.com"}, {"name": "Ravi", "email": "ravi@example.com"}]
+    assert send_daily_brief(db, "house-1", people, brief)["subject"] == subject
+    assert send_daily_brief(db, "house-1", people, brief) is None
+    log = [e for e in db.get_notification_log("house-1") if e["notification_type"] == NOTIFICATION_TYPE]
+    assert len(log) == 2 and {e["recipient_email"] for e in log} == {p["email"] for p in people}
+    assert send_daily_brief(db, "house-2", people[:1], brief) is not None

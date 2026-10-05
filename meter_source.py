@@ -34,28 +34,14 @@ SCENARIOS = {
     "All of the above": ["evening_laundry", "geyser_left_on", "fridge_seal", "pump_dry_run"],
 }
 
-# Names used in the setup screen -> appliance keys used by the detector.
-_SETUP_NAMES = {
-    "air conditioner": "ac", "ac": "ac",
-    "refrigerator": "fridge", "fridge": "fridge",
-    "washing machine": "washing_machine",
-    "water heater": "geyser", "geyser": "geyser",
-    "microwave": "microwave",
-    "water pump": "water_pump", "pump": "water_pump", "motor": "water_pump",
-}
-
-
 def owned_appliances(home_details: Optional[dict]) -> Tuple[str, ...]:
     """
-    Appliance keys this household has.  If setup listed none that the detector
-    knows, the full demo set is used so the app is never empty.
+    Detector keys for the appliances this household listed during setup.  If
+    none of them is detectable, the full demo set is used so the app is never
+    empty.  (devices.household_devices also returns the switched devices.)
     """
-    found = []
-    for item in (home_details or {}).get("appliances", []) or []:
-        key = _SETUP_NAMES.get(str(item.get("name", "")).strip().lower())
-        if key and key not in found:
-            found.append(key)
-    return tuple(k for k in APPLIANCE_KEYS if k in found) if found else tuple(APPLIANCE_KEYS)
+    from devices import household_devices
+    return household_devices(home_details)[0]
 
 
 @st.cache_resource(show_spinner=False)

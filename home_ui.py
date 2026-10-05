@@ -23,12 +23,13 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from appliance_profiles import (
-    FANS, ALWAYS_ON, APPLIANCE_KEYS, CATEGORY_LABELS, COMFORT, DEFAULT_PROFILES, ON_DEMAND,
+    ALWAYS_ON, APPLIANCE_KEYS, CATEGORY_LABELS, COMFORT, DEFAULT_PROFILES, ON_DEMAND,
     HouseholdPrefs, can_switch_off,
 )
 from appliance_ui import meter_settings
+from devices import household_devices
 from meter_source import (
-    HISTORY_DAYS, SCENARIOS, detected_history, get_model as _model, owned_appliances,
+    HISTORY_DAYS, SCENARIOS, detected_history, get_model as _model,
     restrict_to_owned, today_str,
 )
 from live_meter import load_today
@@ -180,20 +181,20 @@ def _members(db, household_id: str, user_name: str, user_email: str) -> list:
     return people
 
 
-def _device_name(key: str) -> str:
-    fan = next((f for f in FANS if f["key"] == key), None)
-    return fan["name"] if fan else DEFAULT_PROFILES[key].name
+def _device_name(key: str, switched: list) -> str:
+    dev = next((f for f in switched if f["key"] == key), None)
+    return dev["name"] if dev else DEFAULT_PROFILES[key].name
 
 
-def _log_switch(db, household_id: str, people: list, event: dict, language: str) -> None:
+def _log_switch(db, household_id: str, people: list, event: dict, language: str, switched: list) -> None:
     """Tell the whole household who switched what.  Shown in the app; no email is sent."""
     device = str(event.get("device", ""))
-    if device not in APPLIANCE_KEYS and device not in [f["key"] for f in FANS]:
+    if device not in APPLIANCE_KEYS and device not in [f["key"] for f in switched]:
         return
     who = str(event.get("member") or people[0]["name"])[:60]
     if who not in [p["name"] for p in people]:
         who = people[0]["name"]
-    text = f"{who} switched the {_device_name(device).lower()} {'on' if event.get('on') else 'off'}"
+    text = f"{who} switched the {_device_name(device, switched).lower()} {'on' if event.get('on') else 'off'}"
     for person in people:
         if person.get("email"):
             db.log_notification(household_id, person["email"], person["name"], "appliance_switch",
@@ -231,7 +232,8 @@ def render_home_tab(tariff_rate: float, home_details=None, db=None, household_id
         "home_state", {"mode": "live", "switches": {}, "nonce": None, "fans": {}})
     state.setdefault("fans", {})
     scenario, tod = meter_settings()
-    owned = owned_appliances(home_details)
+    owned, switched, device_notes = household_devices(home_details)
+    state["fans"] = {k: v for k, v in state["fans"].items() if k in {f["key"] for f in switched}}
     people = _members(db, household_id, user_name, user_email) if db else [{"name": user_name, "email": ""}]
 
     # No spinner: it would push the console down on every switch in test mode.
@@ -239,21 +241,21 @@ def render_home_tab(tariff_rate: float, home_details=None, db=None, household_id
     payload = dict(build_payload(state["mode"], state["switches"], tariff_rate, tod, scenario, owned))
     activity = _recent_activity(db, household_id) if db else []
     payload.update({
-        "theme": theme, "fans": FANS, "fan_state": state["fans"],
+        "theme": theme, "fans": switched, "fan_state": state["fans"],
         "members": [p["name"] for p in people], "activity": activity,
         "household_size": len(people),
     })
     payload["version"] = hashlib.md5(
-        f"{payload['version']}|{theme}|{sorted(state['fans'].items())}|{activity[:1]}|{len(people)}".encode()
+        f"{payload['version']}|{theme}|{sorted(state['fans'].items())}|{activity[:1]}|{len(people)}|{[f["key"] for f in switched]}".encode()
     ).hexdigest()
 
     value = _component(data=payload, key="energy_home", default=None, height=1000)
     if value and value.get("nonce") != state["nonce"]:
         clean = {k: [[int(a), int(b)] for a, b in v][:20]
                  for k, v in (value.get("switches") or {}).items() if k in APPLIANCE_KEYS}
-        fans = {f["key"]: bool((value.get("fans") or {}).get(f["key"])) for f in FANS}
+        fans = {f["key"]: bool((value.get("fans") or {}).get(f["key"])) for f in switched}
         if db and isinstance(value.get("event"), dict):
-            _log_switch(db, household_id, people, value["event"], language)
+            _log_switch(db, household_id, people, value["event"], language, switched)
         st.session_state["home_state"] = {
             "mode": "test" if value.get("mode") == "test" else "live",
             "switches": clean, "nonce": value.get("nonce"), "fans": fans}
@@ -262,5 +264,11 @@ def render_home_tab(tariff_rate: float, home_details=None, db=None, household_id
     if payload["source"]["real"]:
         st.caption(f"Showing readings from {payload['source']['label']}. Detection runs on those readings.")
     else:
-        st.caption("No meter is connected, so this is a replay of a simulated day. The house shows the "
-                   "appliances you listed during setup. Change the simulated home on the Settings page.")
+        listed = len((home_details or {}).get("appliances") or [])
+        st.caption("No meter is connected, so this is a replay of a simulated day. "
+                   + (f"The house shows everything you entered during setup: {len(owned)} appliance(s) found from "
+                      f"the meter and {len(switched)} device(s) shown from their switch. "
+                      if listed else "You listed no appliances, so the demo home is shown. ")
+                   + "Edit the list under Settings, Edit home.")
+    for note in device_notes:
+        st.caption(note)
