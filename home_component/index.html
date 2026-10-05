@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EnergyPulse home</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
+</head>
+<body>
+<div class="loading" id="loading" aria-busy="true" aria-label="Loading the home view">
+  <i class="s-stage"></i><div class="s-side"><i></i><i></i><i></i></div>
+</div>
+<div class="console is-waiting" id="console" data-mode="live">
+
+  <section class="stage" aria-label="Your home">
+    <header class="stage-bar">
+      <div class="seg" role="group" aria-label="Mode">
+        <button type="button" data-mode="live" class="is-on">Live</button>
+        <button type="button" data-mode="test">Test</button>
+      </div>
+      <label class="who">Switching as <select id="member" aria-label="Household member doing the switching"></select></label>
+      <p class="stage-hint" id="hint"></p>
+      <div class="clock">
+        <span id="source" class="source"></span>
+        <time id="clock"></time>
+      </div>
+    </header>
+
+    <div class="viewport" id="viewport">
+      <canvas id="scene" aria-label="3D model of the home. Drag to turn, scroll to zoom."></canvas>
+      <div id="pins"></div>
+      <div class="tip-card" id="tip" hidden role="tooltip"></div>
+      <div class="toast" id="toast" hidden role="status"></div>
+      <div class="alert" id="alert" hidden></div>
+    </div>
+
+    <div class="quick" id="quick" aria-label="Quick switches"></div>
+
+    <footer class="transport">
+      <div class="transport-row">
+        <button type="button" id="play" class="play" aria-label="Pause"></button>
+        <div class="seg small" role="group" aria-label="Replay speed" id="speeds"></div>
+        <span class="transport-note" id="transportNote"></span>
+      </div>
+      <canvas id="timeline" height="132" aria-label="When each appliance ran today. Click to jump to a time."></canvas>
+    </footer>
+  </section>
+
+  <aside class="panel">
+    <section class="meter" aria-label="Main meter">
+      <div class="meter-head">
+        <h2>Main meter</h2>
+        <span class="pulse" id="pulse" title="Blinks faster as the load rises, like the LED on a real meter"></span>
+      </div>
+      <div class="meter-now">
+        <span class="kw" id="kw">0.00</span><span class="unit">kW now</span>
+      </div>
+      <canvas id="wave" height="48" aria-label="Meter reading over the last two hours"></canvas>
+      <div class="register-row">
+        <div>
+          <div class="register" id="register" aria-label="Units used today"></div>
+          <div class="cap">units (kWh) today</div>
+        </div>
+        <div class="cost">
+          <div class="cost-val" id="cost">Rs. 0</div>
+          <div class="cap">so far today</div>
+        </div>
+      </div>
+      <div class="rate" id="rate"></div>
+    </section>
+
+    <section class="devices" aria-label="Appliances">
+      <div class="devices-head">
+        <h2>Appliances</h2>
+        <span id="score" class="score"></span>
+      </div>
+      <ul id="list"></ul>
+    </section>
+
+    <section class="detail" id="detail" aria-live="polite"></section>
+    <section class="feed" aria-label="Household activity">
+      <h2>Household activity</h2>
+      <ul id="activity"></ul>
+    </section>
+  </aside>
+</div>
+<script type="module" src="home.js"></script>
+</body>
+</html>

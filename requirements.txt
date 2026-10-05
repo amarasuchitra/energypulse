@@ -1,0 +1,30 @@
+streamlit>=1.41
+streamlit-autorefresh>=1.0
+pandas>=2.0
+numpy>=1.24
+scikit-learn>=1.3
+xgboost>=2.0
+tensorflow>=2.15
+plotly>=5.24
+
+# Notifications.
+# python-dotenv loads .env for SMTP_HOST / SMTP_USER / SMTP_PASSWORD / SMTP_FROM
+# (and the Twilio variables), falling back to .streamlit/secrets.toml.
+python-dotenv>=1.0
+# sendgrid is the optional alternative email backend.
+sendgrid>=6.10
+# twilio is the optional SMS backend. Without it SMS simply stays
+# "Optional - not configured" and email alerts are unaffected.
+twilio>=8.10
+
+# Bill photo OCR. The Python packages install on their own, but the Tesseract
+# engine is a separate program that must also be installed on the machine
+# (Windows: winget install UB-Mannheim.TesseractOCR, macOS: brew install
+# tesseract, Debian: apt install tesseract-ocr). Without it the app reports
+# "OCR unavailable" instead of guessing at the image contents.
+pillow>=10.0
+pytesseract>=0.3.10
+
+
+# Saved bill files are encrypted on disk (auth.py).
+cryptography>=42

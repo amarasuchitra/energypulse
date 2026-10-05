@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Streamlit
+.streamlit/secrets.toml
+# Any secrets file, wherever it lives
+secrets.toml
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Environment variables (NEVER commit credentials!)
+.env
+.env.local
+.env.*.local
+# .env.example IS tracked on purpose: it holds placeholders, not secrets.
+
+# Database files
+*.db
+energypulse.db
+
+# Generated binary artifacts — ignore by default
+*.parquet
+*.pkl
+*.keras
+*.h5
+
+# ...except the trained model bundle, which is committed (~1.3 MB) so that a
+# fresh clone can run `streamlit run app.py` without retraining first.
+# Regenerate with: python data.py && python model.py
+!models/xgboost_model.pkl
+!models/lstm_model.keras
+!models/lstm_scaler.pkl
+!models/model_meta.pkl
+
+# Raw UCI dataset (~127 MB — exceeds GitHub's 100 MB per-file limit).
+# Regenerate anytime with: python data.py (auto-downloads).
+data/household_power_consumption.txt
+
+# Runtime logs (accidentally committed earlier; kept out of the repo now)
+app_*.log
+stderr*.txt
+stdout*.txt
+streamlit_log.txt
+*.err.log
+
+# Household data and keys: never commit
+energypulse.db
+data/.integrity_key
+data/bills/
+data/live_meter.csv

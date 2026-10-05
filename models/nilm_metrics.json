@@ -1,0 +1,117 @@
+{
+  "data": "SIMULATED homes (meter_sim.py). Test homes are different from training homes. Real homes will score lower.",
+  "train": "16 homes x 10 days plus 120 days of random overlapping use, 1-minute",
+  "test": "6 unseen homes x 10 days plus 30 unseen random days, 1-minute",
+  "model": {
+    "fridge": {
+      "precision": 0.967,
+      "recall": 0.976,
+      "f1": 0.972,
+      "mae_w": 9.5,
+      "true_kwh": 172.26,
+      "estimated_kwh": 164.31,
+      "energy_error_pct": 4.6
+    },
+    "ac": {
+      "precision": 0.985,
+      "recall": 0.996,
+      "f1": 0.991,
+      "mae_w": 13.3,
+      "true_kwh": 503.55,
+      "estimated_kwh": 494.86,
+      "energy_error_pct": 1.7
+    },
+    "geyser": {
+      "precision": 0.976,
+      "recall": 0.984,
+      "f1": 0.98,
+      "mae_w": 4.9,
+      "true_kwh": 167.34,
+      "estimated_kwh": 165.69,
+      "energy_error_pct": 1.0
+    },
+    "washing_machine": {
+      "precision": 0.817,
+      "recall": 0.94,
+      "f1": 0.874,
+      "mae_w": 3.4,
+      "true_kwh": 22.94,
+      "estimated_kwh": 25.28,
+      "energy_error_pct": 10.2
+    },
+    "water_pump": {
+      "precision": 0.839,
+      "recall": 0.979,
+      "f1": 0.904,
+      "mae_w": 4.0,
+      "true_kwh": 43.8,
+      "estimated_kwh": 47.71,
+      "energy_error_pct": 8.9
+    },
+    "microwave": {
+      "precision": 0.955,
+      "recall": 0.961,
+      "f1": 0.958,
+      "mae_w": 0.9,
+      "true_kwh": 19.04,
+      "estimated_kwh": 18.13,
+      "energy_error_pct": 4.8
+    }
+  },
+  "edge_baseline": {
+    "fridge": {
+      "precision": 0.705,
+      "recall": 0.718,
+      "f1": 0.711,
+      "mae_w": 47.2,
+      "true_kwh": 172.26,
+      "estimated_kwh": 152.56,
+      "energy_error_pct": 11.4
+    },
+    "ac": {
+      "precision": 0.876,
+      "recall": 0.769,
+      "f1": 0.819,
+      "mae_w": 74.2,
+      "true_kwh": 503.55,
+      "estimated_kwh": 387.7,
+      "energy_error_pct": 23.0
+    },
+    "geyser": {
+      "precision": 0.62,
+      "recall": 0.355,
+      "f1": 0.452,
+      "mae_w": 59.2,
+      "true_kwh": 167.34,
+      "estimated_kwh": 91.96,
+      "energy_error_pct": 45.0
+    },
+    "washing_machine": {
+      "precision": 0.743,
+      "recall": 0.311,
+      "f1": 0.438,
+      "mae_w": 9.0,
+      "true_kwh": 22.94,
+      "estimated_kwh": 13.16,
+      "energy_error_pct": 42.6
+    },
+    "water_pump": {
+      "precision": 0.998,
+      "recall": 0.534,
+      "f1": 0.696,
+      "mae_w": 8.9,
+      "true_kwh": 43.8,
+      "estimated_kwh": 24.85,
+      "energy_error_pct": 43.3
+    },
+    "microwave": {
+      "precision": 0.235,
+      "recall": 0.762,
+      "f1": 0.359,
+      "mae_w": 21.0,
+      "true_kwh": 19.04,
+      "estimated_kwh": 59.5,
+      "energy_error_pct": 212.5
+    }
+  }
+}
