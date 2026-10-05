@@ -5,9 +5,8 @@ The 3D home console.  Python prepares one day of main-meter data plus what
 the detection model made of it; home_component/ (HTML + three.js, bundled
 locally, no internet needed) plays it on a model of the home.
 
-Three data sources, picked automatically:
-  real meter   data/live_meter.csv has fresh readings (see live_meter.py)
-  simulated    otherwise, a simulated day from meter_sim.py
+The meter is simulated; no hardware is involved.  Two sources:
+  simulated    a simulated day from meter_sim.py
   test mode    the user's own switches, turned into a meter signal
 
 In every case the model is given the meter total only.
@@ -32,11 +31,11 @@ from meter_source import (
     HISTORY_DAYS, SCENARIOS, detected_history, get_model as _model,
     restrict_to_owned, today_str,
 )
-from live_meter import load_today
 from meter_sim import simulate_from_switches
 from scheduler import recommend
 from sessions import extract_sessions, flag_long_runs
 from tariff import Tariff
+from clock import local_now
 
 _component = components.declare_component(
     "energy_home", path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "home_component"))
@@ -59,6 +58,29 @@ _ALERT_ADVICE = {
     "ac": "Check whether the room is still in use.",
     "microwave": "Check that it is not running empty.",
 }
+
+
+METER_EXPLAINER = """
+**This meter is a simulation. No physical meter or sensor is connected.**
+
+1. **The home is simulated.** For each appliance you listed, the simulator writes a realistic power
+   pattern for every minute of the day: a refrigerator compressor that cycles on and off, an air
+   conditioner that runs for hours on warm evenings, a geyser that heats in the morning, and so on.
+2. **The patterns are added together.** The sum, plus a background load for lights and standby and a
+   little noise, is the **main-meter reading**: one number in kW for each minute, which is all a real
+   single-phase household meter measures.
+3. **The detection model sees only that one number.** It is never told which appliances were
+   running. From the size and shape of the steps in the reading, it works out which appliance
+   switched on, for how long, and how much power it drew.
+4. **Units and cost come from the reading.** Units (kWh) are the kW values added up over time;
+   cost is the units multiplied by the tariff for that hour.
+5. **Live and Test.** *Live* replays the simulated day. In *Test* you switch the appliances
+   yourself; the simulator turns your switches into a new meter reading, and the model has to find
+   them from that reading alone.
+
+The switches change the simulation only. Nothing in a real home is switched, and an appliance you
+switch on stays on until you switch it off and confirm it.
+"""
 
 
 def _periods(tariff: Tariff) -> list:
@@ -153,24 +175,11 @@ def _test_day(date: str, switches_json: str, rate: float, tod: bool, owned: tupl
                     {"label": "Test signal", "real": False}, 360, switches, version, owned)
 
 
-def _real_day(feed: pd.DataFrame, device: str, rate: float, tod: bool,
-              owned=tuple(APPLIANCE_KEYS)) -> dict:
-    tariff = Tariff(rate, tod_enabled=tod)
-    pred = restrict_to_owned(_model().predict(feed), owned)
-    tips, alerts = _tips_and_alerts(pred, pred, tariff)
-    version = hashlib.md5(f"real|{feed['datetime'].iloc[-1]}|{rate}|{tod}|{owned}".encode()).hexdigest()
-    return _payload(pred, None, tips, alerts, tariff, "live",
-                    {"label": f"Meter feed: {device}", "real": True}, len(pred) - 1, {}, version, owned)
-
-
 def build_payload(mode: str, switches: dict, rate: float, tod: bool, scenario: str,
                   owned=tuple(APPLIANCE_KEYS)) -> dict:
     today = today_str()
     if mode == "test":
         return _test_day(today, json.dumps(switches, sort_keys=True), float(rate), tod, owned)
-    feed, device = load_today()
-    if feed is not None:
-        return _real_day(feed, device, float(rate), tod, owned)
     return _simulated_day(today, scenario, float(rate), tod, owned)
 
 
@@ -203,9 +212,10 @@ def _log_switch(db, household_id: str, people: list, event: dict, language: str,
 
 
 def _local_hhmm(stamp) -> str:
-    """The database stores UTC; people read local time."""
+    """The database stores UTC; people read the household's own time."""
     try:
-        return pd.Timestamp(stamp, tz="UTC").tz_convert(pd.Timestamp.now().astimezone().tzinfo).strftime("%H:%M")
+        from clock import to_local
+        return to_local(stamp).strftime("%H:%M")
     except Exception:
         return str(stamp or "")[11:16]
 
@@ -265,11 +275,10 @@ def render_home_tab(tariff_rate: float, home_details=None, db=None, household_id
             "switches": clean, "nonce": value.get("nonce"), "fans": fans}
         st.rerun()
 
-    if payload["source"]["real"]:
-        st.caption(f"Showing readings from {payload['source']['label']}. Detection runs on those readings.")
-    else:
-        st.caption("No meter is connected, so this is a replay of a simulated day. The house shows only what "
-                   f"you entered during setup: {len(owned)} appliance(s) found from the meter and "
-                   f"{len(switched)} device(s) shown from their switch. Add or remove items under Settings, Edit home.")
+    with st.expander("How the meter works"):
+        st.markdown(METER_EXPLAINER)
+    st.caption("No meter is connected, so this is a replay of a simulated day. The house shows only what "
+               f"you entered during setup: {len(owned)} appliance(s) found from the meter and "
+               f"{len(switched)} device(s) shown from their switch. Add or remove items under Settings, Edit home.")
     for note in device_notes:
         st.caption(note)

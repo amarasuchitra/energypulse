@@ -19,6 +19,7 @@ from meter_sim import simulate_home
 from motion import notify
 from sessions import extract_sessions, flag_long_runs
 from shell_ui import current_theme, tc as _tc
+from clock import local_now, to_local
 
 _EXTRA = {"dark": {"alert": "#EF6A5B", "current": "#F5A83C"}, "light": {"alert": "#CF4630", "current": "#B96D05"}}
 
@@ -477,7 +478,7 @@ def render_family_extras(ctx) -> None:
         with st.container(border=True):
             section("Who switched what")
             if members:
-                _rows([(m["name"], f"most used: {m['most_used']}" + (f"; last at {m['last']:%d %b %H:%M} UTC" if m["last"] is not None else ""),
+                _rows([(m["name"], f"most used: {m['most_used']}" + (f"; last at {to_local(m['last']):%d %b %H:%M}" if m["last"] is not None else ""),
                         f"{m['switches']} switch(es)",
                         f"{m['minutes']:.0f} min on, Rs. {m['cost']:.2f}" if m["minutes"] else "") for m in members])
                 st.caption("Counted from the switches used on the Home page. Time and cost are worked out for devices "
@@ -498,7 +499,7 @@ def render_family_extras(ctx) -> None:
                          for c in kwh.columns if c != "total"]
                 cutoff = kwh.index[-7]
                 report = {
-                    "household": ctx["user_name"], "prepared": f"{pd.Timestamp.now():%d %b %Y}",
+                    "household": ctx["user_name"], "prepared": f"{local_now():%d %b %Y}",
                     "period": f"{kwh.index[-7]:%d %b} to {kwh.index[-1]:%d %b %Y}",
                     "kwh": float(week), "cost": float(cost["total"].tail(7).sum()),
                     "change_pct": 100.0 * float(week - before) / max(float(before), 1e-9),
@@ -508,7 +509,7 @@ def render_family_extras(ctx) -> None:
                     "members": members, "co2": tk.carbon_kg(float(week), settings(ctx)["co2"]),
                 }
                 pdf = tk.weekly_report_pdf(report)
-                name = f"energypulse_week_{pd.Timestamp.now():%Y%m%d}.pdf"
+                name = f"energypulse_week_{local_now():%Y%m%d}.pdf"
                 ctx["ledger"].record(ctx["household_id"], "weekly_report", name, pdf, {"period": report["period"]})
                 st.session_state["tk_weekly_pdf"] = (name, pdf)
                 notify("success", "Weekly report prepared and fingerprinted.")
@@ -534,7 +535,7 @@ def whatsapp_link(subject: str, body: str) -> str:
 def render_help(ctx) -> None:
     section, db, hid = ctx["section"], ctx["db"], ctx["household_id"]
     outages = db.get_store(hid, "outages", []) or []
-    summary = tk.outage_summary(outages)
+    summary = tk.outage_summary(outages, local_now())
     left, right = st.columns(2, gap="medium")
     with left:
         with st.container(border=True):
@@ -547,7 +548,7 @@ def render_help(ctx) -> None:
             ctx["metric_card"](c3, label="Longest", value=f"{summary['longest']}", unit="min", sub="single cut")
             with st.form("tk_outage_form", clear_on_submit=True):
                 f1, f2, f3 = st.columns(3)
-                day = f1.date_input("Date", value=pd.Timestamp.now().date(), max_value=pd.Timestamp.now().date())
+                day = f1.date_input("Date", value=local_now().date(), max_value=local_now().date())
                 start = f2.time_input("Started at", value=pd.Timestamp("18:00").time())
                 minutes = f3.number_input("Minutes without power", 1, 2880, 30, 5)
                 note = st.text_input("Note (optional)", placeholder="For example: whole street, after rain")

@@ -10,7 +10,7 @@ history from here, so their numbers always agree.
 Appliances the home does not own are left out of the simulation and are
 never reported by the detector.
 
-To move the app onto a real recording later, this is the one place to change.
+The meter is simulated from the household's appliance list; there is no hardware.
 """
 
 from typing import Iterable, Optional, Tuple
@@ -22,6 +22,7 @@ import streamlit as st
 from appliance_profiles import APPLIANCE_KEYS
 from disaggregate import MODEL_PATH, Disaggregator, train_default
 from meter_sim import simulate_home
+from clock import local_now
 
 HISTORY_DAYS = 30
 
@@ -81,7 +82,7 @@ def last_days(pred: pd.DataFrame, days: int) -> pd.DataFrame:
 
 
 def today_str() -> str:
-    return str(pd.Timestamp.now().date())
+    return str(local_now().date())
 
 
 SOURCE_NOTE = ("Simulated main-meter feed. No physical meter is connected, so appliance "

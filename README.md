@@ -85,33 +85,26 @@ works offline: Sora for titles, Hanken Grotesk for interface text,
 IBM Plex Mono for readings. No emoji is used anywhere; `i18n.py` strips them from
 every translated string in one place.
 
-## Home console and real meter feed (V3.1)
+## Home console and the simulated meter (V3.1)
 
 The **Home** tab is a 3D model of the home driven by the main-meter reading:
 appliances the detection model finds light up, the supply route from the meter
-to each one is traced on the floor, and a side panel shows the meter (live kW,
-units today, cost, current tariff period) and every appliance's state, run time
-and cost. **Test** mode lets you switch appliances on yourself; the model gets
-only the combined meter signal and has to find them.
+to each one is traced on the floor, and a side panel shows the meter (kW now,
+units today, cost, current tariff period) and every device's state and cost.
+
+**The meter is a simulation; no hardware is involved.** `meter_sim.py` writes a
+minute-by-minute power pattern for each appliance the household listed, adds
+them up with a background load and noise, and that sum is the meter reading.
+The detection model is given only the sum. **Test** mode turns the user's own
+switches into a new reading. A device switched on stays on until the user
+switches it off and confirms it. The page carries a "How the meter works" note.
 
 | File | What it does |
 | --- | --- |
+| `meter_sim.py` | The simulated home and meter |
 | `home_ui.py` | Prepares the day's data and hosts the console |
 | `home_component/` | The console itself (HTML, CSS, JavaScript, three.js bundled locally, works offline) |
-| `live_meter.py` | Receiver for a real meter, plus a simulated demo feed over the same path |
-| `docs/esp32_pzem_meter.ino` | ESP32 + PZEM-004T sketch that posts readings to the receiver |
-
-**Connecting a meter**
-
-```
-python live_meter.py serve        # on the computer running the app, port 8600
-```
-
-Point the ESP32 sketch at `http://<that-computer's-IP>:8600/reading`. Once about
-30 readings have arrived today, the Home tab switches from the simulated day to
-the meter feed and labels the source with the device name. Without hardware,
-`python live_meter.py demo-feed` sends simulated values through the same path.
-The receiver has no password; run it only on a home or lab network.
+| `clock.py` | The household's time zone, confirmed during setup |
 
 ## Appliance detection from the main meter (V3)
 

@@ -27,7 +27,6 @@ const S = {
 };
 const SPEEDS = [["1 min/s", 1], ["5 min/s", 5], ["20 min/s", 20]];
 const INTRO_SEC = 1.9;      // one opening move: the model rises and the camera settles
-const TEST_RUN_MIN = { geyser: 25, water_pump: 20, washing_machine: 60, microwave: 4, ac: 180 };
 
 // ---------------------------------------------------------------- icons
 const ICONS = {
@@ -548,7 +547,7 @@ function load(data) {
   $("source").textContent = data.source.label;
   $("source").classList.toggle("is-real", !!data.source.real);
   $("hint").textContent = S.mode === "test"
-    ? "You are switching the appliances. The model sees only the meter total and has to find them."
+    ? "You are switching the appliances. Each stays on until you switch it off and confirm."
     : "Glowing appliances are what the meter reading gives away. Every device has a switch in the list.";
   document.querySelectorAll(".seg [data-mode]").forEach((b) => b.classList.toggle("is-on", b.dataset.mode === S.mode));
   $("speeds").style.display = data.source.real ? "none" : "";
@@ -609,7 +608,26 @@ function toast(text, kind = "info") {
 }
 $("member").addEventListener("change", (e) => { S.member = e.target.value; });
 
-function toggleFan(key) {
+// Switching OFF always asks first.  Nothing is ever switched off on a timer.
+let confirmAction = null;
+function askOff(name, note, action) {
+  $("confirmText").innerHTML = `Switch off the ${name.toLowerCase()}?<small>${note}</small>`;
+  confirmAction = action; $("confirm").hidden = false; $("confirmNo").focus();
+}
+function closeConfirm(run) {
+  const action = confirmAction; confirmAction = null; $("confirm").hidden = true;
+  if (run && action) action();
+}
+$("confirmYes").addEventListener("click", () => closeConfirm(true));
+$("confirmNo").addEventListener("click", () => closeConfirm(false));
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && confirmAction) closeConfirm(false); });
+
+function toggleFan(key, confirmed = false) {
+  if (S.fans[key] && !confirmed) {
+    const f = devByKey(key);
+    askOff(f.name, "It stays on until you confirm.", () => toggleFan(key, true));
+    return;
+  }
   S.fans[key] = !S.fans[key]; S.lastPanel = 0;
   sendValue({ mode: S.mode, switches: S.switches, fans: S.fans, nonce: Date.now(),
               event: { member: S.member, device: key, on: S.fans[key], minute: Math.floor(S.playhead) } });
@@ -621,20 +639,27 @@ function userOn(key, m) {             // test mode: what the user asked for
   return (S.switches[key] || []).some(([s, e]) => m >= s && m < e);
 }
 
-function toggle(key) {
+function toggle(key, confirmed = false) {
   const m = Math.floor(S.playhead);
+  const a0 = byKey(key);
+  const onNow = S.mode === "test" ? userOn(key, m) : !!a0.on[m];
+  if (onNow && !confirmed) {
+    askOff(a0.name, S.mode === "test" ? "It stays on until you confirm."
+      : "This takes over from the replay: you will be switching the appliances yourself.", () => toggle(key, true));
+    return;
+  }
   if (S.mode !== "test") {
     // Taking over from the replay: start from what is running right now.
     S.switches = {};
     for (const a of S.data.appliances) {
-      if (!a.locked && a.on[m]) S.switches[a.key] = [[m, Math.min(S.data.mains.length, m + (TEST_RUN_MIN[a.key] || 30))]];
+      if (!a.locked && a.on[m]) S.switches[a.key] = [[m, S.data.mains.length]];
     }
     toast("You are now switching the appliances yourself (Test mode). The model has to find them from the meter total.", "info");
   }
   const list = (S.switches[key] = S.switches[key] || []);
   const live = list.find(([s, e]) => m >= s && m < e);
   if (live) { live[1] = m; if (live[1] <= live[0]) list.splice(list.indexOf(live), 1); }
-  else list.push([m, Math.min(S.data.mains.length, m + (TEST_RUN_MIN[key] || 30))]);
+  else list.push([m, S.data.mains.length]);          // stays on until the user switches it off
   S.pending = true; S.wantMode = "test"; S.lastPanel = 0;
   sendValue({ mode: "test", switches: S.switches, fans: S.fans, nonce: Date.now(),
               event: { member: S.member, device: key, on: !live, minute: m } });

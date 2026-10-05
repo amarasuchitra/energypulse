@@ -63,6 +63,7 @@ from sessions import extract_sessions, flag_long_runs
 import toolkit_ui
 from toolkit import send_left_on
 from shell_ui import tc, apply_theme, theme_toggle, current_theme, inject_skin, page_header, sidebar_nav, login_hero, step_list, wordmark
+from clock import local_now, browser_tz, options as tz_options, set_tz, user_tz
 
 
 def init_language():
@@ -814,6 +815,22 @@ def sign_out():
         st.session_state.pop(k, None)
 
 
+@st.dialog("Log out?")
+def confirm_sign_out():
+    name = st.session_state.get("auth", {}).get("name") or "this account"
+    guest = st.session_state.get("auth", {}).get("guest")
+    st.write(f"You are signed in as **{name}**. "
+             + ("A guest home is not kept: logging out removes it." if guest
+                else "Your home and settings are saved and will be here when you sign in again."))
+    stay, leave = st.columns(2)
+    if stay.button("Stay signed in", key="logout_stay", width="stretch"):
+        st.rerun()
+    if leave.button("Log out", key="logout_go", type="primary", width="stretch"):
+        sign_out()
+        notify("info", "You have logged out.")
+        st.rerun()
+
+
 def render_login_screen():
     if "auth" not in st.session_state:
         st.session_state.auth = {"logged_in": False, "email": None, "mode": "login"}
@@ -954,6 +971,15 @@ def _render_onboard_step1(od):
         city = st.text_input(T("city_label"),
             value=od.get("city", ""), key="ob_city", placeholder=T("ph_city"))
         od["city"] = city
+    detected = browser_tz()
+    zones = tz_options(od.get("timezone") or detected)
+    zone = st.selectbox("Time zone", zones, index=zones.index(od["timezone"]) if od.get("timezone") in zones else 0,
+                        key="ob_tz")
+    od["timezone"] = zone
+    set_tz(zone)
+    st.caption((f"Your browser reports {detected}. " if detected else "")
+               + f"With your agreement the app uses {zone} for today's date, the calendar and the times it shows. "
+                 f"It is now {local_now():%a %d %b, %H:%M} there. Pick another zone if that is wrong.")
     st.markdown("")
     c_back, c_next = st.columns([1, 1])
     with c_next:
@@ -1085,6 +1111,7 @@ def _render_onboard_step3(od):
                 "num_appliances": len(od["appliances"]),
                 "tariff_rate": od["tariff_rate"],
                 "city": od.get("city", ""),
+                "timezone": od.get("timezone") or user_tz(),
                 "home_size": od.get("home_size", 0) if od.get("home_size", 0) > 0 else None,
                 "peak_morning": (6, 10),
                 "peak_evening": (18, 22),
@@ -1225,7 +1252,7 @@ PAGE_TITLES = {
 
 
 def _default_settings(hd):
-    now = pd.Timestamp.now()
+    now = local_now()
     return {"tariff_rate": float(hd.get("tariff_rate", 8.0)), "peak_morning": (6, 10),
             "peak_evening": (18, 22), "display_count": 100,
             "cal_month": int(now.month), "cal_year": int(now.year)}
@@ -1248,6 +1275,8 @@ def render_sidebar():
             f"<span>{user_name} &middot; {T('people_suffix', n=hd.get('occupants', 0))}{size}</span></div>",
             unsafe_allow_html=True)
         theme_toggle()
+        if st.button("Log out", key="side_logout", width="stretch"):
+            confirm_sign_out()
     return st.session_state.sidebar_settings
 
 
@@ -1277,6 +1306,7 @@ def render_settings_page():
                     "home_type": hd.get("home_type", "Apartment"), "occupants": hd.get("occupants", 1),
                     "appliances": appliances, "tariff_rate": hd.get("tariff_rate", 8.0),
                     "city": hd.get("city", ""), "home_size": hd.get("home_size", 0) or 0,
+                    "timezone": hd.get("timezone") or user_tz(),
                 }
                 st.rerun()
         with st.container(border=True):
@@ -1289,10 +1319,19 @@ def render_settings_page():
             peak_evening = st.slider(T("sb_peak_pm"), 0, 23, tuple(cur["peak_evening"]), key="sb_peak_pm")
         with st.container(border=True):
             render_language_selector(key="lang_select")
+            zones = tz_options(hd.get("timezone") or user_tz())
+            zone = st.selectbox("Time zone", zones, index=zones.index(user_tz()) if user_tz() in zones else 0,
+                                key="sb_tz", help="Used for today's date, the calendar and the times shown.")
+            if zone != hd.get("timezone"):
+                hd["timezone"] = zone
+                set_tz(zone)
+                try:
+                    get_db().save_home_details(current_household_id(), hd)
+                except Exception:
+                    pass
+            st.caption(f"It is now {local_now():%a %d %b, %H:%M} in {user_tz()}.")
             if st.button(T("btn_sign_out"), key="sb_signout"):
-                sign_out()
-                notify("info", "You have signed out.")
-                st.rerun()
+                confirm_sign_out()
 
     with right:
         with st.container(border=True):
@@ -1454,7 +1493,7 @@ def extract_bill_details(text: str) -> dict:
 
 def month_options():
     """Last 12 months as localized labels, newest first."""
-    now = pd.Timestamp.now()
+    now = local_now()
     opts = []
     for i in range(12):
         d = now - pd.DateOffset(months=i)
@@ -1666,7 +1705,7 @@ def render_bills_tab():
         seen = st.session_state.setdefault("bill_seen", [])
         if sig not in seen:
             seen.append(sig)
-            ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+            ts = local_now().strftime("%Y%m%d_%H%M%S")
             save_uploaded_bill(data, f"bill_camera_{ts}.jpg", "jpeg", month_choice)
 
     render_saved_bills()
@@ -1714,7 +1753,7 @@ def render_record_checks():
             body = report_body(float(hd.get("tariff_rate", 8.0)), owned_appliances(hd),
                                st.session_state.get("auth", {}).get("name") or "Household")
             st.download_button("Download sealed report", sign_report(body),
-                               file_name=f"energypulse_report_{pd.Timestamp.now():%Y%m%d}.txt",
+                               file_name=f"energypulse_report_{local_now():%Y%m%d}.txt",
                                mime="text/plain", key="report_download")
             check = st.file_uploader("Report to check", type=["txt"], key="report_probe")
             if check is not None:
@@ -1755,13 +1794,14 @@ def main_dashboard():
 
 def _main_dashboard_inner():
     home_details = st.session_state.home_details
+    set_tz(home_details.get("timezone") or user_tz())
     ss = st.session_state.get("sidebar_settings", {})
     tariff_rate = home_details.get("tariff_rate", 8.0)
     peak_morning = ss.get("peak_morning", (6, 10))
     peak_evening = ss.get("peak_evening", (18, 22))
     display_count = ss.get("display_count", 100)
-    cal_month = ss.get("cal_month", pd.Timestamp.now().month)
-    cal_year = ss.get("cal_year", pd.Timestamp.now().year)
+    cal_month = ss.get("cal_month", local_now().month)
+    cal_year = ss.get("cal_year", local_now().year)
     sf = compute_scaling_factor(home_details)
 
     auth_email = st.session_state.auth["email"]
@@ -1828,7 +1868,7 @@ def _main_dashboard_inner():
             when_text = T("src_latest",
                           when=format_localized_date(row_time),
                           age=format_data_age(
-                              (pd.Timestamp.now() - pd.Timestamp(row_time))
+                              (local_now() - pd.Timestamp(row_time))
                               .total_seconds() / 3600.0))
         live_bar_html = (f"""
         <div class="live-bar">
@@ -2014,7 +2054,7 @@ def _main_dashboard_inner():
             confidence = max(0, min(100, (1 - uncertainty / max(pred_kw, 0.01)) * 100))
             # The stored forecast file is dated by the original recording; the
             # estimate is for the month after the current one.
-            next_month_start = pd.Timestamp.now().normalize().replace(day=1) + pd.DateOffset(months=1)
+            next_month_start = local_now().normalize().replace(day=1) + pd.DateOffset(months=1)
             model_name = T("pred_model_hybrid" if pred_info.get("lstm_used") else "pred_model_xgb_only")
             st.markdown(
                 f"<div class='ep-stat'><small>{T('card_next_month')}</small>"
