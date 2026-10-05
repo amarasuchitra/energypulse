@@ -148,6 +148,35 @@ class DatabaseManager:
 
             conn.commit()
 
+    # ────────────── SMALL PER-HOUSEHOLD SETTINGS (goal, schedules, outages...) ───
+    def get_store(self, household_id: str, key: str, default=None):
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""CREATE TABLE IF NOT EXISTS household_store (
+                household_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (household_id, key))""")
+            cursor.execute("SELECT value_json FROM household_store WHERE household_id = ? AND key = ?",
+                           (household_id, key))
+            row = cursor.fetchone()
+        if not row:
+            return default
+        try:
+            return json.loads(row["value_json"])
+        except (ValueError, TypeError):
+            return default
+
+    def set_store(self, household_id: str, key: str, value) -> None:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""CREATE TABLE IF NOT EXISTS household_store (
+                household_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (household_id, key))""")
+            cursor.execute("""INSERT INTO household_store (household_id, key, value_json, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(household_id, key) DO UPDATE SET
+                    value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP""",
+                           (household_id, key, json.dumps(value)))
+
     # ────────────── HOME SETUP (so a returning user lands on their own home) ─────
     def save_home_details(self, household_id: str, details: Dict[str, Any]) -> None:
         with self.get_connection() as conn:

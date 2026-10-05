@@ -28,3 +28,4 @@ pytesseract>=0.3.10
 
 # Saved bill files are encrypted on disk (auth.py).
 cryptography>=42
+reportlab>=4.0

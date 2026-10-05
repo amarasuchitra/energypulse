@@ -214,6 +214,12 @@ def send_daily_brief(db, household_id: str, people: List[dict], brief: dict,
                     emailed += int(bool(ok))
             except Exception as exc:                  # email must never stop the in-app notice
                 error = type(exc).__name__
+        if service is not None and person.get("phone"):
+            try:
+                if service.sms_configured():
+                    service.send_sms(person["phone"], subject[:150])
+            except Exception:
+                pass
         db.log_notification(household_id, email, person.get("name") or email, NOTIFICATION_TYPE,
                             "daily schedule", data, subject, body, language,
                             status=status, error_message=error)

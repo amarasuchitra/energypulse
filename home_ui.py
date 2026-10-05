@@ -177,7 +177,7 @@ def build_payload(mode: str, switches: dict, rate: float, tod: bool, scenario: s
 def _members(db, household_id: str, user_name: str, user_email: str) -> list:
     people = [{"name": user_name, "email": user_email}]
     for m in db.get_family_members(household_id):
-        people.append({"name": m.get("name") or m.get("email"), "email": m.get("email")})
+        people.append({"name": m.get("name") or m.get("email"), "email": m.get("email"), "phone": m.get("phone")})
     return people
 
 

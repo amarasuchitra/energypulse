@@ -230,6 +230,8 @@ def render_notifications_tab(db, household_id: str, primary_email: str,
         with st.container(border=True):
             st.markdown(f"**{latest.get('subject') or ''}**")
             st.text(latest.get("body_text") or "")
+            from toolkit_ui import whatsapp_link
+            st.link_button("Share on WhatsApp", whatsapp_link(latest.get("subject") or "", latest.get("body_text") or ""))
             st.caption("Sent once a day to every household member"
                        + (" by email and in the app." if latest.get("status") == "sent"
                           else ". Shown in the app; set up email below to receive it by email too."))

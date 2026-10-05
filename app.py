@@ -58,6 +58,10 @@ from daily_brief import build_brief, send_daily_brief
 from meter_source import last_days
 from tariff import Tariff
 from notifications import get_notification_service
+from devices import household_devices
+from sessions import extract_sessions, flag_long_runs
+import toolkit_ui
+from toolkit import send_left_on
 from shell_ui import tc, apply_theme, theme_toggle, current_theme, inject_skin, page_header, sidebar_nav, login_hero, step_list, wordmark
 
 
@@ -1195,9 +1199,10 @@ def render_brief_section(brief):
 
 
 PAGES = [("home", "tab_home"), ("overview", "tab_overview"), ("appliances", "tab_appliances"),
-         ("analysis", "tab_analysis"), ("save", "tab_save"), ("bills", "tab_bills"),
+         ("analysis", "tab_analysis"), ("save", "tab_save"), ("goals", "tab_goals"),
+         ("safety", "tab_safety"), ("bills", "tab_bills"), ("upgrades", "tab_upgrades"),
          ("trends", "tab_trends"), ("family", "tab_family"), ("alerts", "tab_notifications"),
-         ("assistant", "tab_chat"), None, ("settings", "tab_settings")]
+         ("assistant", "tab_chat"), ("help", "tab_help"), None, ("settings", "tab_settings")]
 
 # Page titles are written for English; other languages use the page's own name.
 PAGE_TITLES = {
@@ -1206,6 +1211,10 @@ PAGE_TITLES = {
     "appliances": ("What the meter gives away", "Every appliance found in the main-meter signal, and how long it ran."),
     "analysis": ("Where the power goes", "Units and rupees, by appliance and by time of day."),
     "save": ("Changes worth making", "Only suggestions a household could follow, each with its working shown."),
+    "goals": ("Stay on target", "A monthly goal, your planned hours, similar homes and your carbon."),
+    "safety": ("Faults and overload", "What ran too long, what is wearing out, and how close you come to tripping the breaker."),
+    "upgrades": ("Is it worth buying?", "A new appliance, rooftop solar or a backup, costed from your own use."),
+    "help": ("Get it sorted", "Log power cuts and draft a complaint with your own figures."),
     "bills": ("Your bills", "Keep past bills in one place and compare them with the forecast."),
     "trends": ("How your use moves", "Recent readings and a month at a glance."),
     "family": ("The household", "Who gets which alerts, and in which language."),
@@ -1923,6 +1932,19 @@ def _main_dashboard_inner():
         head()
         prepare_meter("console")
         render_brief_strip(todays_brief(tariff_rate, owned, household_id, user_display, auth_email))
+        left_mark = (household_id, today_str())
+        if st.session_state.get("_left_on_mark") != left_mark:      # once per sign-in per day
+            st.session_state["_left_on_mark"] = left_mark
+            try:
+                scenario_, tod_ = meter_settings()
+                today_rows = detected_history(today_str(), scenario_, owned).tail(1440)
+                flags = flag_long_runs(extract_sessions(today_rows, Tariff(rate=float(tariff_rate), tod_enabled=tod_)))
+                for text in send_left_on(get_db(), household_id,
+                                         household_people(get_db(), household_id, user_display, auth_email),
+                                         flags, st.session_state.get("lang", "en"))[:2]:
+                    notify("warning", text + ". See the Safety page.")
+            except Exception:
+                pass
         render_home_tab(tariff_rate, home_details, db=get_db(), household_id=household_id,
                         user_name=st.session_state.auth.get("name") or T("guest_name"),
                         user_email=auth_email, theme=current_theme(),
@@ -2020,8 +2042,32 @@ def _main_dashboard_inner():
         prepare_meter("page")
         render_save_tab(tariff_rate, owned, section, PLOTLY_LAYOUT)
 
+    def toolkit_ctx():
+        scenario, tod = meter_settings()
+        db_ = get_db()
+        return {"pred": detected_history(today_str(), scenario, owned), "owned": owned,
+                "switched": household_devices(home_details)[1], "tariff": Tariff(rate=float(tariff_rate), tod_enabled=tod),
+                "rate": float(tariff_rate), "db": db_, "household_id": household_id, "user_name": user_display,
+                "people": household_people(db_, household_id, user_display, auth_email),
+                "section": section, "metric_card": metric_card, "layout": PLOTLY_LAYOUT, "ledger": get_ledger(),
+                "brief": todays_brief(tariff_rate, owned, household_id, user_display, auth_email)}
+
+    if page in ("goals", "safety", "upgrades"):
+        head(meter_chip, "sim")
+        prepare_meter("page")
+        {"goals": toolkit_ui.render_goals, "safety": toolkit_ui.render_safety,
+         "upgrades": toolkit_ui.render_upgrades}[page](toolkit_ctx())
+
+    if page == "help":
+        head()
+        prepare_meter("page")
+        toolkit_ui.render_help(toolkit_ctx())
+
     if page == "bills":
         head()
+        prepare_meter("page")
+        load_saved_bills()
+        toolkit_ui.render_bill_tools(toolkit_ctx(), st.session_state.get("bills"))
         render_bills_tab()
 
     if page == "trends":
@@ -2102,6 +2148,8 @@ def _main_dashboard_inner():
     if page == "family":
         head()
         render_family_tab(get_db(), household_id)
+        prepare_meter("page")
+        toolkit_ui.render_family_extras(toolkit_ctx())
 
     if page == "alerts":
         head()

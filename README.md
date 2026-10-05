@@ -14,6 +14,22 @@ dataset (34,168 hourly rows, December 2006 – November 2010) and a trained
 > meter feed. To use your own readings, upload a CSV — see
 > [Using your own data](#using-your-own-data).
 
+## Household toolkit (V3.9)
+
+Pages that answer the other questions a household has about electricity. The sums are in `toolkit.py` (tested in `test_toolkit.py`), the pages in `toolkit_ui.py`.
+
+| Page | What it does |
+|---|---|
+| My Bills | Works a bill out again from its units, slabs, fixed charge and duty and compares it with the amount charged; warns before a slab is crossed; explains a change by appliance |
+| Safety | Highest sustained load against the sanctioned load, a fault history, and left-on notifications |
+| Upgrades | Payback of a 5-star replacement, rooftop solar with subsidy and net metering, inverter and battery size |
+| Goals | Monthly rupee goal with streak, planned hours per appliance, simulated similar homes, carbon |
+| Family | Who switched what, and a fingerprinted one-page weekly PDF |
+| Notifications | Share the daily forecast on WhatsApp; SMS to members with a phone number when Twilio is set up |
+| Help | Power-cut log and a complaint letter filled with the household's own figures |
+
+Tariff tables for Karnataka and Delhi are starting points and every rate is editable, because tariff orders change each year. Replacement savings, solar yield and prices are stated assumptions the user can change. The app advises only; without hardware it cannot switch anything.
+
 ## One flow from sign-up to savings (V3.8)
 
 The app now runs as one connected path:
