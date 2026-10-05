@@ -28,7 +28,7 @@ from appliance_profiles import (
 from appliance_ui import meter_settings
 from devices import household_devices
 from meter_source import (
-    HISTORY_DAYS, SCENARIOS, detected_history, get_model as _model,
+    HISTORY_DAYS, SCENARIOS, detected_history, get_model as _model, now_minute,
     restrict_to_owned, today_str,
 )
 from meter_sim import simulate_from_switches
@@ -180,7 +180,13 @@ def build_payload(mode: str, switches: dict, rate: float, tod: bool, scenario: s
     today = today_str()
     if mode == "test":
         return _test_day(today, json.dumps(switches, sort_keys=True), float(rate), tod, owned)
-    return _simulated_day(today, scenario, float(rate), tod, owned)
+    # Live: the day is known only up to this minute on the household's clock.
+    live = dict(_simulated_day(today, scenario, float(rate), tod, owned))
+    minute = now_minute()
+    live.update({"follow": True, "now_minute": minute, "start_minute": minute, "live_edge": minute + 1,
+                 "alerts": [a for a in live["alerts"] if a["warn_at"] <= minute],
+                 "version": hashlib.md5(f"{live['version']}|{minute}".encode()).hexdigest()})
+    return live
 
 
 def _members(db, household_id: str, user_name: str, user_email: str) -> list:
@@ -277,7 +283,8 @@ def render_home_tab(tariff_rate: float, home_details=None, db=None, household_id
 
     with st.expander("How the meter works"):
         st.markdown(METER_EXPLAINER)
-    st.caption("No meter is connected, so this is a replay of a simulated day. The house shows only what "
+    st.caption("No meter is connected: this is a simulated meter, shown at the current time on your clock. "
+               "Drag the timeline to look back over today. The house shows only what "
                f"you entered during setup: {len(owned)} appliance(s) found from the meter and "
                f"{len(switched)} device(s) shown from their switch. Add or remove items under Settings, Edit home.")
     for note in device_notes:

@@ -99,6 +99,12 @@ The detection model is given only the sum. **Test** mode turns the user's own
 switches into a new reading. A device switched on stays on until the user
 switches it off and confirms it. The page carries a "How the meter works" note.
 
+The simulated home follows the household: the usage level chosen for each
+appliance and the number of people change how long and how often things run.
+The Home page and the Overview sit at the current time on the household's
+clock and show only what has happened so far today. The forecast model trained
+on the recorded reference dataset is shown separately on the Trends page.
+
 | File | What it does |
 | --- | --- |
 | `meter_sim.py` | The simulated home and meter |

@@ -55,7 +55,7 @@ from motion import notify, runtime as motion_runtime, skeleton
 from integrity import Ledger, store_bill_file, read_bill_file, bill_path, sign_report, verify_report
 from home_ui import render_home_tab, _members as household_people
 from daily_brief import build_brief, send_daily_brief
-from meter_source import last_days
+from meter_source import last_days, now_minute
 from tariff import Tariff
 from notifications import get_notification_service
 from devices import household_devices
@@ -1158,6 +1158,60 @@ def todays_brief(tariff_rate, owned, household_id, user_name, user_email):
     return brief
 
 
+@st.cache_data(show_spinner=False)
+def _now_cached(date, scenario, owned, rate, tod, minute):
+    from daily_brief import right_now
+    return right_now(detected_history(date, scenario, owned), owned, Tariff(rate=rate, tod_enabled=tod), minute)
+
+
+def render_now_section(tariff_rate, owned):
+    """The simulated meter at this minute: the same source as the Home page and the forecast."""
+    try:                                   # keep "right now" in step with the clock
+        from streamlit_autorefresh import st_autorefresh
+        st_autorefresh(interval=60_000, key="now_autorefresh")
+    except ImportError:
+        pass
+    scenario, tod = meter_settings()
+    minute = now_minute()
+    now = _now_cached(today_str(), scenario, tuple(owned), float(tariff_rate), tod, minute)
+    section(f"Right now, {local_now():%a %d %b, %H:%M}")
+    c1, c2, c3, c4 = st.columns(4)
+    metric_card(c1, label="Load now", value=f"{now['kw']:.2f}", unit="kW",
+                sub=("running: " + ", ".join(now["running"])) if now["running"] else "no large appliance running")
+    metric_card(c2, label="Next hour, usually", value=f"{now['next_kw']:.2f}", unit="kW",
+                sub=f"between {now['next_lo']:.2f} and {now['next_hi']:.2f} on the last {now['next_days']} days")
+    metric_card(c3, label="Today so far", value=f"Rs. {now['cost']:.0f}",
+                sub=f"{now['kwh']:.1f} units; {now['period'].lower()} rate Rs. {now['rate']:.2f}")
+    change = now["week_change"]
+    metric_card(c4, label="Last 7 days", value=f"Rs. {now['week_cost']:.0f}",
+                sub=f"{now['week_kwh']:.0f} units",
+                trend_text="" if change is None else f"{change:+.0f}% on the week before",
+                trend_dir="neutral" if change is None or abs(change) < 2 else ("up" if change > 0 else "down"))
+    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+    with st.container(border=True):
+        section("Today on the meter")
+        base_day = pd.Timestamp(today_str())
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=[base_day + pd.Timedelta(minutes=i) for i in range(0, len(now["typical"]), 5)],
+            y=now["typical"][::5], mode="lines", name="A usual day (average of the last month)",
+            line=dict(color=tc("faint"), width=1.2, dash="dot"),
+            hovertemplate="%{x|%H:%M}<br>%{y:.2f} kW usually<extra></extra>"))
+        fig.add_trace(go.Scatter(
+            x=[base_day + pd.Timedelta(minutes=i) for i in range(len(now["trace"]))], y=now["trace"],
+            mode="lines", name="Today so far", line=dict(color=ACCENT, width=1.8),
+            fill="tozeroy", fillcolor="rgba(245,168,60,0.10)",
+            hovertemplate="%{x|%H:%M}<br>%{y:.2f} kW<extra></extra>"))
+        fig.update_layout(**PLOTLY_LAYOUT(
+            height=300, yaxis_title="kW", showlegend=True, margin=dict(l=40, r=20, t=10, b=30),
+            xaxis=dict(range=[base_day, base_day + pd.Timedelta(days=1)], tickformat="%H:%M"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1)))
+        st.plotly_chart(fig, width="stretch", key="overview_today")
+        st.caption("Simulated main-meter reading up to this minute. The rest of today is not known yet, "
+                   "so it is not drawn. This page updates every minute.")
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+
 def render_brief_strip(brief):
     """One line above the 3D home."""
     if not brief:
@@ -1843,7 +1897,7 @@ def _main_dashboard_inner():
     # interaction, so without this the displayed reading stays frozen while the
     # simulator moves on. Refresh only while the replay is actually moving, and
     # stop once it reaches the end so the session does not rerun forever.
-    if st.session_state.get("page") == "overview":
+    if st.session_state.get("page") == "trends":
         refresh_replay(sim)
 
     # Only the shifted sample dataset may be matched against the wall clock.
@@ -1977,7 +2031,7 @@ def _main_dashboard_inner():
             st.session_state["_left_on_mark"] = left_mark
             try:
                 scenario_, tod_ = meter_settings()
-                today_rows = detected_history(today_str(), scenario_, owned).tail(1440)
+                today_rows = detected_history(today_str(), scenario_, owned).tail(1440).iloc[: now_minute() + 1]
                 flags = flag_long_runs(extract_sessions(today_rows, Tariff(rate=float(tariff_rate), tod_enabled=tod_)))
                 for text in send_left_on(get_db(), household_id,
                                          household_people(get_db(), household_id, user_display, auth_email),
@@ -1991,12 +2045,19 @@ def _main_dashboard_inner():
                         language=st.session_state.get("lang", "en"))
 
     if page == "overview":
-        head(T("live_label") + " &middot; " + when_text, "")
+        head(meter_chip, "sim")
+        prepare_meter("page")
+        render_now_section(tariff_rate, owned)
+        render_brief_section(todays_brief(tariff_rate, owned, household_id, user_display, auth_email))
+
+    def recorded_block():
+        """Next hour and next month from the recorded reference dataset, with the hybrid model."""
         for note in missing_notes:
             st.warning(note)
-        prepare_meter("page")
-        render_brief_section(todays_brief(tariff_rate, owned, household_id, user_display, auth_email))
-        section("Whole-home meter, next hour and next month")
+        section("Reference recording: next hour and next month (hybrid model)")
+        st.caption("This part uses a real household recording replayed at today's date, to show the "
+                   "LSTM and XGBoost forecast model. It is a different home from your simulated meter, "
+                   "so its figures are not your bill.")
         pct_change = week_info.get("pct_change", 0)
         if pct_change > 2:
             week_trend = (T("trend_vs_week", pct=f"+{pct_change:.1f}"), "up")
@@ -2111,7 +2172,8 @@ def _main_dashboard_inner():
         render_bills_tab()
 
     if page == "trends":
-        head()
+        head(T("live_label") + " &middot; " + when_text, "")
+        recorded_block()
         section(T("sec_trends"))
         # Build the plotted window straight from the full remapped dataset so
         # the chart is populated immediately (the replay simulator replays this

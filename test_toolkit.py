@@ -158,3 +158,35 @@ def test_settings_store_is_private_to_a_household(tmp_path):
     db.set_store("h1", "toolkit", {"goal": 2500})
     db.set_store("h1", "toolkit", {"goal": 2600})
     assert db.get_store("h1", "toolkit") == {"goal": 2600} and db.get_store("h2", "toolkit") is None
+
+
+def test_usage_levels_and_household_size_change_the_simulated_home():
+    from meter_source import habits_key, split_scenario, with_habits
+    base = simulate_home(days=14, seed=3)
+    heavy = simulate_home(days=14, seed=3, usage={"ac": 1.5})
+    light = simulate_home(days=14, seed=3, usage={"ac": 0.6})
+    assert light["ac"].sum() < base["ac"].sum() < heavy["ac"].sum()
+    assert abs(heavy["fridge"].sum() - base["fridge"].sum()) < 1e-6          # the fridge is not a habit
+    big, small = simulate_home(days=14, seed=3, people=7), simulate_home(days=14, seed=3, people=1)
+    for col in ["geyser", "other_kw"]:
+        assert small[col].sum() < base[col].sum() < big[col].sum()
+    home = {"occupants": 6, "appliances": [{"name": "Air Conditioner", "usage": "High"},
+                                           {"name": "Refrigerator", "usage": "Medium"},
+                                           {"name": "Water Heater", "usage": "Low"}]}
+    assert habits_key(home) == "ac=1.5,geyser=0.6;people=6"
+    assert split_scenario(with_habits("Geyser left on by mistake", home)) == (
+        "Geyser left on by mistake", {"ac": 1.5, "geyser": 0.6}, 6.0)
+    assert split_scenario("Typical summer home") == ("Typical summer home", {}, 4.0)
+    assert with_habits("Typical summer home", home) != with_habits("Typical summer home", {**home, "occupants": 2})
+
+
+def test_right_now_only_counts_what_has_happened(home):
+    from daily_brief import right_now
+    pred, tariff = home[0], home[1]
+    early, late = right_now(pred, APPLIANCE_KEYS, tariff, 6 * 60), right_now(pred, APPLIANCE_KEYS, tariff, 21 * 60)
+    assert early["kwh"] < late["kwh"] and early["cost"] < late["cost"]
+    assert len(early["trace"]) == 361 and len(late["typical"]) == 1440
+    today = pred.tail(1440)
+    assert abs(late["kwh"] - today["mains_kw"].iloc[:1261].sum() / 60) < 1e-6
+    assert late["next_lo"] <= late["next_kw"] <= late["next_hi"] and late["next_days"] >= 7
+    assert right_now(pred, APPLIANCE_KEYS, tariff, 23 * 60 + 50)["next_days"] >= 7     # hour that wraps midnight

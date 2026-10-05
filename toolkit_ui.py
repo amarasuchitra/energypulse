@@ -16,6 +16,7 @@ import toolkit as tk
 from appliance_profiles import DEFAULT_PROFILES
 from daily_brief import _daily
 from meter_sim import simulate_home
+from meter_source import now_minute
 from motion import notify
 from sessions import extract_sessions, flag_long_runs
 from shell_ui import current_theme, tc as _tc
@@ -72,7 +73,8 @@ def base(ctx) -> dict:
         days = max(1.0, len(history) / 1440.0)
         ctx["_base"] = {
             "kwh": kwh, "cost": cost, "history": history, "sessions": extract_sessions(history, tariff),
-            "today": pred[pd.to_datetime(pred["datetime"]).dt.normalize() == today],
+            # today is still in progress: only the minutes that have happened
+            "today": pred[pd.to_datetime(pred["datetime"]).dt.normalize() == today].iloc[: now_minute() + 1],
             "month_kwh": {k: float(history[f"{k}_kw"].sum() / 60.0 / days * 30.0) for k in owned},
             "avg_rate": float(cost["total"].iloc[:-1].sum() / max(kwh["total"].iloc[:-1].sum(), 1e-9)),
         }

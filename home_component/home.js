@@ -478,6 +478,7 @@ function load(data) {
   const first = !S.data;
   const modeChanged = S.data && S.data.mode !== data.mode;
   S.data = data; S.version = data.version; S.mode = data.mode; S.pending = false;
+  S.edgeBase = data.now_minute; S.edgeAt = performance.now();
   S.switches = JSON.parse(JSON.stringify(data.switches || {}));
   $("console").dataset.mode = S.mode;
 
@@ -543,12 +544,14 @@ function load(data) {
   if (first || data.source.real) S.playhead = data.source.real ? data.live_edge - 1 : data.start_minute;
   if (first && data.appliances.some((a) => a.key === "ac")) S.selected = "ac";
   if (modeChanged && S.mode === "test") S.playhead = Math.min(S.playhead, data.live_edge - 2);
+  if (modeChanged && S.mode === "live") { S.playhead = data.live_edge - 1; S.playing = true; }
+  if (data.follow) S.playhead = Math.min(S.playhead, data.live_edge - 1);
 
   $("source").textContent = data.source.label;
   $("source").classList.toggle("is-real", !!data.source.real);
   $("hint").textContent = S.mode === "test"
     ? "You are switching the appliances. Each stays on until you switch it off and confirm."
-    : "Glowing appliances are what the meter reading gives away. Every device has a switch in the list.";
+    : "This is your home at this moment. Glowing appliances are what the meter reading gives away.";
   document.querySelectorAll(".seg [data-mode]").forEach((b) => b.classList.toggle("is-on", b.dataset.mode === S.mode));
   $("speeds").style.display = data.source.real ? "none" : "";
   $("play").style.display = data.source.real ? "none" : "";
@@ -697,7 +700,10 @@ function updatePanel(m) {
   $("play").classList.toggle("is-paused", !S.playing);
   $("play").setAttribute("aria-label", S.playing ? "Pause" : "Play");
   $("transportNote").textContent = d.source.real ? "Following the meter feed"
-    : S.pending ? "Updating the meter signal..." : `Replay of a simulated day. 1 second = ${S.speed} min`;
+    : S.pending ? "Updating the meter signal..."
+    : d.follow && m >= d.live_edge - 1 ? `Now, ${hhmm(m)}. Simulated meter. Drag the timeline to look back over today`
+    : d.follow ? `Looking back at ${hhmm(m)}. 1 second = ${S.speed} min`
+    : `Your switches, simulated. 1 second = ${S.speed} min`;
 
   let running = 0, found = 0;
   for (const a of d.appliances) {
@@ -863,7 +869,17 @@ function frame(now) {
   if (S.data) intro(dt);
   controls.update();
   if (S.data) {
-    const d = S.data, edge = d.live_edge - 1;
+    const d = S.data;
+    if (d.follow) {
+      // the simulated meter keeps time with the wall clock
+      const e = Math.min(d.mains.length, Math.floor(S.edgeBase + (now - S.edgeAt) / 60000) + 1);
+      if (e !== d.live_edge) {
+        const atEdge = S.playhead >= d.live_edge - 1.05;
+        d.live_edge = e; S.lastPanel = 0;
+        if (atEdge) S.playhead = e - 1;
+      }
+    }
+    const edge = d.live_edge - 1;
     if (d.source.real) S.playhead = edge;
     else if (S.playing) {
       S.playhead += dt * S.speed;

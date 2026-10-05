@@ -270,6 +270,8 @@ hr { border-color: var(--line) !important; }
 .stTabs [data-baseweb="tab"][aria-selected="true"] { background: var(--slate-2) !important; color: var(--plaster) !important;
   box-shadow: inset 0 -2px 0 var(--current); }
 [data-baseweb="tab-panel"] { padding-top: 1rem !important; }
+.stButton button:disabled, [data-testid="stBaseButton-primary"]:disabled {
+  opacity: .38 !important; cursor: not-allowed !important; filter: saturate(.4); }
 .ep-pw-rules { margin: -.2rem 0 .7rem; padding: .7rem .9rem; border: 1px solid var(--line); border-radius: 12px;
   background: var(--ink); font-size: .78rem; color: var(--mist); }
 .ep-pw-rules b { color: var(--plaster); font-weight: 600; }

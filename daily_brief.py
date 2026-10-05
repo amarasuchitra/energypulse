@@ -137,6 +137,50 @@ def build_brief(pred: pd.DataFrame, owned, tariff: Optional[Tariff] = None,
     }
 
 
+def right_now(pred: pd.DataFrame, owned, tariff: Tariff, minute: int) -> dict:
+    """
+    The meter at `minute` of today (the last calendar day of `pred`): load now,
+    units and cost so far, what the next hour usually looks like at this time
+    of day, and the last seven days.
+    """
+    owned = [k for k in owned if f"{k}_kw" in pred.columns]
+    dts = pd.to_datetime(pred["datetime"])
+    day = dts.dt.normalize()
+    today = pred[day == day.iloc[-1]].reset_index(drop=True)
+    minute = int(np.clip(minute, 0, len(today) - 1))
+    so_far = today.iloc[: minute + 1]
+    rates = tariff.minute_rates()
+    kwh = float(so_far["mains_kw"].sum() / 60.0)
+    cost = float((so_far["mains_kw"].to_numpy() / 60.0 * rates[: minute + 1]).sum())
+    running = [DEFAULT_PROFILES[k].name for k in owned if bool(today[f"{k}_on"].iloc[minute])]
+
+    # The coming hour, from the same clock hour on each earlier day.
+    past = pred[day < day.iloc[-1]]
+    clock = (pd.to_datetime(past["datetime"]).dt.hour * 60 + pd.to_datetime(past["datetime"]).dt.minute)
+    lo, hi = minute + 1, minute + 60
+    window = (clock >= lo) & (clock <= hi) if hi < 1440 else (clock >= lo) | (clock <= hi - 1440)
+    hourly = past.loc[window].groupby(pd.to_datetime(past.loc[window, "datetime"]).dt.normalize())["mains_kw"].mean().tail(14)
+    week = past.tail(7 * 1440)
+    week_cost = float((week["mains_kw"].to_numpy() / 60.0
+                       * rates[(pd.to_datetime(week["datetime"]).dt.hour * 60
+                                + pd.to_datetime(week["datetime"]).dt.minute).to_numpy()]).sum())
+    before = past.iloc[-14 * 1440:-7 * 1440]
+    before_kwh = float(before["mains_kw"].sum() / 60.0)
+    week_kwh = float(week["mains_kw"].sum() / 60.0)
+    return {
+        "minute": minute, "kw": float(today["mains_kw"].iloc[minute]), "running": running,
+        "kwh": kwh, "cost": cost, "rate": float(rates[minute]), "period": tariff.label_at(minute / 60.0),
+        "next_kw": float(hourly.mean()) if len(hourly) else 0.0,
+        "next_lo": float(hourly.quantile(0.1)) if len(hourly) else 0.0,
+        "next_hi": float(hourly.quantile(0.9)) if len(hourly) else 0.0,
+        "next_days": int(len(hourly)),
+        "week_kwh": week_kwh, "week_cost": week_cost,
+        "week_change": 100.0 * (week_kwh - before_kwh) / before_kwh if before_kwh > 0 else None,
+        "trace": today["mains_kw"].iloc[: minute + 1].round(3).tolist(),
+        "typical": pred[day < day.iloc[-1]].assign(m=clock.to_numpy()).groupby("m")["mains_kw"].mean().round(3).tolist(),
+    }
+
+
 def brief_text(brief: dict) -> Tuple[str, str]:
     """Subject and plain-text body, used for the in-app notification and for email."""
     subject = (f"Today's forecast, {brief['date_label']}: {brief['total_kwh']:.1f} units, "

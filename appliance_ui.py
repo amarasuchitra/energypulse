@@ -22,7 +22,8 @@ from appliance_profiles import (
 )
 from disaggregate import METRICS_PATH
 from meter_source import (
-    HISTORY_DAYS, SCENARIOS, SOURCE_NOTE, detected_history, get_model, last_days, today_str,
+    HISTORY_DAYS, SCENARIOS, SOURCE_NOTE, detected_history, get_model, last_days, split_scenario, today_str,
+    with_habits,
 )
 from scheduler import recommend
 from sessions import extract_sessions, totals
@@ -47,7 +48,10 @@ def meter_settings():
     scenario = st.session_state.get("meter_scenario", list(SCENARIOS)[0])
     if scenario not in SCENARIOS:
         scenario = list(SCENARIOS)[0]
-    return scenario, bool(st.session_state.get("meter_tod", True))
+    # The household's usage levels and size travel with the scenario name, so
+    # every cached result is specific to this home's habits.
+    return (with_habits(scenario, st.session_state.get("home_details")),
+            bool(st.session_state.get("meter_tod", True)))
 
 
 def render_meter_settings():
@@ -56,6 +60,7 @@ def render_meter_settings():
     session keys so they survive when the Settings page is not on screen.
     """
     scenario, tod = meter_settings()
+    scenario = split_scenario(scenario)[0]
     names = list(SCENARIOS)
     chosen = st.selectbox("Simulated home", names, index=names.index(scenario), key="w_meter_scenario",
                           help="Pick a home with a fault to see alerts and health checks.")

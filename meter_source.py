@@ -66,19 +66,71 @@ def restrict_to_owned(pred: pd.DataFrame, owned: Iterable[str]) -> pd.DataFrame:
     return pred
 
 
+USAGE_FACTOR = {"Low": 0.6, "Medium": 1.0, "High": 1.5}
+
+
+def habits_key(home_details: Optional[dict]) -> str:
+    """The household's usage levels and size as a short text, e.g. 'ac=1.5,geyser=0.6;people=5'."""
+    from devices import detected_key
+    hd = home_details or {}
+    levels = {}
+    for item in hd.get("appliances", []) or []:
+        if not isinstance(item, dict):
+            continue
+        key = detected_key(str(item.get("name", "")))
+        if key and key not in levels:
+            levels[key] = USAGE_FACTOR.get(item.get("usage", "Medium"), 1.0)
+    parts = ",".join(f"{k}={v}" for k, v in sorted(levels.items()) if v != 1.0)
+    try:
+        people = int(hd.get("occupants", 4) or 4)
+    except (TypeError, ValueError):
+        people = 4
+    return f"{parts};people={people}"
+
+
+def with_habits(scenario: str, home_details: Optional[dict]) -> str:
+    return f"{scenario}||{habits_key(home_details)}"
+
+
+def split_scenario(scenario: str):
+    """'Typical summer home||ac=1.5;people=5' -> (name, {'ac': 1.5}, 5.0).  A bare name is the reference home."""
+    name, _, habits = str(scenario).partition("||")
+    usage, people = {}, 4.0
+    if habits:
+        levels, _, tail = habits.partition(";")
+        for pair in filter(None, levels.split(",")):
+            k, _, v = pair.partition("=")
+            try:
+                usage[k] = float(v)
+            except ValueError:
+                pass
+        try:
+            people = float(tail.replace("people=", "") or 4)
+        except ValueError:
+            people = 4.0
+    return (name if name in SCENARIOS else list(SCENARIOS)[0]), usage, people
+
+
 @st.cache_data(show_spinner=False)
 def detected_history(date: str, scenario: str, owned: Tuple[str, ...],
                      days: int = HISTORY_DAYS) -> pd.DataFrame:
     """`days` of 1-minute detection results, ending at the end of `date`."""
     start = pd.Timestamp(date) - pd.Timedelta(days=days - 1)
+    name, usage, people = split_scenario(scenario)
     df = simulate_home(days=days, seed=777, start=str(start.date()),
-                       faults=SCENARIOS[scenario], include=owned)
+                       faults=SCENARIOS[name], include=owned, usage=usage, people=people)
     pred = get_model().predict(df[["datetime", "mains_kw"]])
     return restrict_to_owned(pred, owned)
 
 
 def last_days(pred: pd.DataFrame, days: int) -> pd.DataFrame:
     return pred.tail(days * 1440).reset_index(drop=True)
+
+
+def now_minute() -> int:
+    """Minutes since midnight on the household's clock."""
+    now = local_now()
+    return int(now.hour * 60 + now.minute)
 
 
 def today_str() -> str:

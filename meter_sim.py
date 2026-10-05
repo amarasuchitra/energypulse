@@ -131,9 +131,16 @@ def simulate_home(days: int = 7, seed: int = 0, start: str = "2026-04-01",
                   season: str = "summer",
                   faults: Optional[List[str]] = None,
                   noise_kw: float = 0.012,
-                  include: Optional[tuple] = None) -> pd.DataFrame:
+                  include: Optional[tuple] = None,
+                  usage: Optional[Dict[str, float]] = None,
+                  people: float = 4.0) -> pd.DataFrame:
     """
     Simulate `days` of one home at 1-minute resolution.
+
+    usage:  how heavily the household uses each appliance, as a factor on how
+            long and how often it runs (0.6 light, 1.0 typical, 1.5 heavy).
+    people: number of people at home; baths, laundry, cooking and the
+            background load scale with it (4 is the reference home).
 
     include: appliance keys this home owns; the rest draw nothing.  None = all.
 
@@ -150,6 +157,12 @@ def simulate_home(days: int = 7, seed: int = 0, start: str = "2026-04-01",
     ratings = ratings or random_ratings(rng)
     n = days * MIN_PER_DAY
     traces = {k: np.zeros(n) for k in APPLIANCE_KEYS}
+    crowd = float(np.clip(people / 4.0, 0.4, 2.5))
+    use = {k: float((usage or {}).get(k, 1.0)) for k in APPLIANCE_KEYS}
+    for k in ("geyser", "washing_machine", "microwave", "water_pump"):
+        use[k] *= crowd ** 0.7                               # people-driven appliances
+    long = lambda minutes, k: max(1, int(round(minutes * min(use[k], 1.6))))
+    often = lambda p, k: min(0.98, p * use[k])
 
     traces["fridge"] = _fridge(n, rng, ratings["fridge"],
                                duty=0.75 if "fridge_seal" in faults else 0.40)
@@ -159,51 +172,51 @@ def simulate_home(days: int = 7, seed: int = 0, start: str = "2026-04-01",
         last_day = d == days - 1
 
         # Geyser: morning bath, sometimes an evening one
-        dur = int(rng.integers(15, 35))
+        dur = long(int(rng.integers(15, 35)), "geyser")
         if "geyser_left_on" in faults and last_day:
             dur = int(rng.integers(170, 200))
         _place(traces["geyser"], base + int(rng.normal(6.5 * 60, 25)),
                _resistive(dur, rng, ratings["geyser"]))
-        if rng.random() < 0.35:
+        if rng.random() < often(0.35, "geyser"):
             _place(traces["geyser"], base + int(rng.normal(19.5 * 60, 30)),
                    _resistive(int(rng.integers(10, 25)), rng, ratings["geyser"]))
 
         # Water pump: once or twice a day
-        dur = int(rng.integers(12, 28))
+        dur = long(int(rng.integers(12, 28)), "water_pump")
         if "pump_dry_run" in faults and last_day:
             dur = int(rng.integers(85, 100))
         _place(traces["water_pump"], base + int(rng.normal(7.5 * 60, 40)),
                _resistive(dur, rng, ratings["water_pump"]))
-        if rng.random() < 0.5:
+        if rng.random() < often(0.5, "water_pump"):
             _place(traces["water_pump"], base + int(rng.normal(17.5 * 60, 40)),
                    _resistive(int(rng.integers(10, 22)), rng, ratings["water_pump"]))
 
         # Washing machine: about every second day
-        if rng.random() < 0.55 or ("evening_laundry" in faults):
+        if rng.random() < often(0.55, "washing_machine") or ("evening_laundry" in faults):
             hour = 19.5 if "evening_laundry" in faults else rng.choice([9.5, 11.0, 19.0])
             _place(traces["washing_machine"], base + int(rng.normal(hour * 60, 20)),
                    _washer_run(int(rng.integers(45, 75)), rng, ratings["washing_machine"]))
 
         # Microwave: short bursts round meal times
         for meal_hour in (8.0, 13.2, 20.3):
-            for _ in range(int(rng.integers(0, 3))):
+            for _ in range(int(round(int(rng.integers(0, 3)) * use["microwave"]))):
                 _place(traces["microwave"], base + int(rng.normal(meal_hour * 60, 25)),
                        _resistive(int(rng.integers(1, 6)), rng, ratings["microwave"]))
 
         # AC: afternoon (sometimes) and night, summer only
         if season == "summer":
-            if rng.random() < 0.5:
+            if rng.random() < often(0.5, "ac"):
                 _place(traces["ac"], base + int(rng.normal(14 * 60, 30)),
-                       _ac_run(int(rng.integers(60, 150)), rng, ratings["ac"]))
-            if rng.random() < 0.9:
+                       _ac_run(long(int(rng.integers(60, 150)), "ac"), rng, ratings["ac"]))
+            if rng.random() < often(0.9, "ac"):
                 _place(traces["ac"], base + int(rng.normal(22 * 60, 30)),
-                       _ac_run(int(rng.integers(240, 440)), rng, ratings["ac"]))
+                       _ac_run(long(int(rng.integers(240, 440)), "ac"), rng, ratings["ac"]))
 
     if include is not None:
         for key in APPLIANCE_KEYS:
             if key not in include:
                 traces[key] = np.zeros(n)
-    return _assemble(traces, _background(n, rng), rng, start, noise_kw)
+    return _assemble(traces, _background(n, rng) * (0.6 + 0.4 * crowd), rng, start, noise_kw)
 
 
 def _assemble(traces: Dict[str, np.ndarray], other: np.ndarray, rng,
