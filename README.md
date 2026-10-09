@@ -25,6 +25,8 @@ Every appliance can be described in one of three ways, on the setup screen or la
   - *Web look-up* (`spec_search.py`): searches the brand and model (DuckDuckGo's plain results page, Bing as a fallback; no paid service or key), reads the top result pages, and keeps the figures the sources agree on. The figures are shown with how many sources agreed and links to them, and are used only when the user accepts them.
   - *Type them in.* Every figure stays editable.
 
+**Drag and drop a photo** onto the drop zone on the Home page (below the 3D home) or on My appliances. The plate is read, the appliance is recognised from its words ("monoblock pump", "refrigerator", "cooling capacity"...) or from its size, and the user chooses whether it is a new appliance or belongs to one already listed.
+
 Photos are stored encrypted per household. Items can be added, changed or removed at any time on the My appliances page, and the 3D home, forecast and advice follow straight away.
 
 ## Appliance catalogue, specifications and home types (V4.1)

@@ -2111,6 +2111,9 @@ def _main_dashboard_inner():
                         user_name=st.session_state.auth.get("name") or T("guest_name"),
                         user_email=auth_email, theme=current_theme(),
                         language=st.session_state.get("lang", "en"))
+        section("Add an appliance from a photo")
+        from appliance_manager import render_drop_zone
+        render_drop_zone(get_db(), household_id, notify, key="home_drop", compact=True)
 
     if page == "overview":
         head(meter_chip, "sim")

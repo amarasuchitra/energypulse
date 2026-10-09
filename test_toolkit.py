@@ -440,3 +440,13 @@ def test_web_look_up_reads_sources_and_keeps_what_agrees():
     # nothing reachable: says so instead of inventing figures
     offline = look_up("anything", fetch_get=lambda url, **kw: None, fetch_post=lambda url, data: None)
     assert not offline["ok"] and offline["figures"] == {}
+
+
+def test_dropped_photo_is_recognised():
+    from appliance_manager import guess_type
+    assert guess_type("SPLIT AIR CONDITIONER Cooling capacity 5200 W", {}) == "ac"
+    assert guess_type("Monoblock pump 1 HP head 30 m", {}) == "water_pump"
+    assert guess_type("FROST FREE REFRIGERATOR 340 L", {}) == "fridge"
+    assert guess_type("Model XJ-200 230V", {"capacity": "15 L", "rated_w": 2000}) == "geyser"
+    assert guess_type("Model XJ-200 230V", {"capacity": "7 kg"}) == "washing_machine"
+    assert guess_type("nothing useful", {}) == ""

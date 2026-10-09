@@ -238,6 +238,116 @@ def _spec_editor(item: dict, household_id: str, prefix: str) -> bool:
     return refresh
 
 
+# ------------------------------------------------------------ drop a photo
+# Words on a rating plate or a product label that say what the appliance is.
+_PLATE_WORDS = [
+    ("fridge", r"refrigerat|fridge|freezer|frost"), ("ac", r"air ?condition|split|cooling capacity|\binverter ac\b|ton\b|tr\b"),
+    ("washing_machine", r"washing|washer|wash load|spin"), ("geyser", r"water heater|geyser|storage heater|instant heater"),
+    ("water_pump", r"pump|monoblock|submersible|head\s*\(?m|discharge|\bhp\b"), ("microwave", r"microwave|oven|grill"),
+    ("tv", r"television|led tv|\btv\b|uhd|4k|smart tv"), ("fan", r"ceiling fan|\bfan\b|sweep|bldc"),
+    ("cooler", r"cooler"), ("iron", r"\biron\b"), ("induction", r"induction|cooktop"), ("mixer", r"mixer|grinder|juicer"),
+    ("kettle", r"kettle"), ("router", r"router|wi-?fi"), ("purifier", r"purifier|\bro\b"), ("chimney", r"chimney|hood"),
+    ("heater", r"room heater|fan heater|oil heater"), ("dishwasher", r"dishwasher"), ("vacuum", r"vacuum"),
+]
+
+
+def guess_type(text: str, figures: dict) -> str:
+    """Which appliance a plate most likely belongs to, from its words, else from its size."""
+    import re as _re
+    low = (text or "").lower()
+    for key, pattern in _PLATE_WORDS:
+        if _re.search(pattern, low):
+            return key
+    cap, watts = str(figures.get("capacity", "")), float(figures.get("rated_w") or 0)
+    if cap.endswith(" L") and watts and watts < 400:
+        return "fridge"
+    if cap.endswith(" L") and watts >= 1000:
+        return "geyser"
+    if cap.endswith(" kg"):
+        return "washing_machine"
+    if cap.endswith(" HP"):
+        return "water_pump"
+    if cap.endswith(" ton"):
+        return "ac"
+    return ""
+
+
+def render_drop_zone(db, household_id: str, notify, key: str = "drop", compact: bool = False) -> None:
+    """
+    Drop (or choose) a photo of any appliance or its rating plate.  The plate is
+    read, the appliance is recognised from its words, and the user decides
+    whether it is a new appliance or belongs to one already listed.
+    """
+    hd = st.session_state.home_details
+    items = hd.setdefault("appliances", [])
+    round_ = st.session_state.setdefault(f"{key}_round", 0)       # a fresh box after each save
+    with st.container(key=f"{key}_zone"):
+        upload = st.file_uploader("Drop a photo of an appliance or its rating plate here",
+                                  type=PHOTO_TYPES, key=f"{key}_file_{round_}",
+                                  help="Drag a photo from your computer onto this box, or click to choose one. "
+                                       "On a phone it opens the camera.")
+    if upload is None:
+        st.session_state.pop(f"{key}_result", None)
+        return
+    data = upload.getvalue()
+    pid = store_photo(household_id, data)
+    result = st.session_state.get(f"{key}_result")
+    if not result or result["pid"] != pid:
+        with st.spinner("Reading the photo..."):
+            text, ok = read_plate(data)
+        figures = parse_plate(text) if ok else {}
+        result = {"pid": pid, "ok": ok, "text": text.strip(),
+                  "figures": {k: v for k, v in figures.items() if k in ("rated_w", "voltage_v", "current_a", "frequency_hz",
+                                                                       "star", "capacity", "model_no")},
+                  "guess": guess_type(text, figures)}
+        st.session_state[f"{key}_result"] = result
+
+    with st.container(border=True):
+        left, right = st.columns([1, 2.4], gap="medium")
+        left.image(data, width=220)
+        with right:
+            fig = result["figures"]
+            if fig:
+                st.markdown("**Read from the photo:** " + ", ".join(_say(k, v) for k, v in fig.items()))
+            elif result["ok"] is False:
+                st.caption("Text reading is not available here. Choose the appliance below; you can type its figures later.")
+            else:
+                st.caption("No figures could be read from this photo. It is kept with the appliance; for exact figures "
+                           "try a close, sharp photo of the rating plate.")
+            types = [t for t in catalog.CATALOG]
+            names = [t.name for t in types]
+            guess = next((i for i, t in enumerate(types) if t.key == result["guess"]), 0)
+            kind = st.selectbox("This is a" + (" (recognised from the plate)" if result["guess"] else ""), names,
+                                index=guess, key=f"{key}_type_{pid}")
+            t = types[names.index(kind)]
+            same = [i for i, it in enumerate(items) if isinstance(it, dict) and it.get("type_key") == t.key]
+            choices = ["Add it as a new appliance"] + [f"It is my {items[i]['name']} ({n})" for n, i in enumerate(same, 1)]
+            where = st.radio("Where does it go?", choices, index=1 if same else 0, key=f"{key}_where_{pid}")
+            if st.button("Save", type="primary", key=f"{key}_save_{pid}"):
+                if where == choices[0]:
+                    item = catalog.item_for(t.key)
+                    items.append(item)
+                    st.session_state["am_open"] = len(items) - 1
+                else:
+                    item = items[same[choices.index(where) - 1]]
+                    st.session_state["am_open"] = items.index(item)
+                item.setdefault("photos", [])
+                if pid not in item["photos"]:
+                    item["photos"].append(pid)
+                if fig.get("rated_w"):
+                    item["spec_mode"] = "own"
+                    item["own"] = {**(item.get("own") or {}), **fig}
+                _save(db, household_id)
+                st.session_state.pop(f"{key}_result", None)
+                st.session_state[f"{key}_round"] = round_ + 1
+                notify("success", f"Photo saved with your {item['name'].lower()}"
+                       + (" and its figures were filled in from the plate." if fig.get("rated_w") else "."))
+                st.rerun()
+            if result["text"]:
+                with st.expander("What the camera read"):
+                    st.text(result["text"][:1500])
+
+
 # ---------------------------------------------------------------- the page
 def _save(db, household_id: str) -> None:
     hd = st.session_state.home_details
@@ -253,7 +363,9 @@ def render_page(db, household_id: str, section, notify) -> None:
     items = hd.setdefault("appliances", [])
     before = json.dumps(items, sort_keys=True, default=str)
 
-    section("Add an appliance")
+    section("Add an appliance from a photo")
+    render_drop_zone(db, household_id, notify, key="am_drop")
+    section("Or pick from the list")
     c1, c2, c3 = st.columns([1.2, 1.6, 0.8], vertical_alignment="bottom")
     category = c1.selectbox("Category", catalog.CATEGORIES + ["Something else"], key="am_cat")
     if category == "Something else":

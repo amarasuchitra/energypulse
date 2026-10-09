@@ -273,6 +273,14 @@ hr { border-color: var(--line) !important; }
 [data-baseweb="tab-panel"] { padding-top: 1rem !important; }
 .stButton button:disabled, [data-testid="stBaseButton-primary"]:disabled {
   opacity: .38 !important; cursor: not-allowed !important; filter: saturate(.4); }
+[class*="st-key-am_drop_zone"] [data-testid="stFileUploaderDropzone"],
+[class*="st-key-home_drop_zone"] [data-testid="stFileUploaderDropzone"] {
+  min-height: 132px; border: 2px dashed var(--line) !important; border-radius: 16px !important;
+  background: var(--slate) !important; transition: border-color var(--d2, .2s) ease, background var(--d2, .2s) ease; }
+[class*="st-key-am_drop_zone"] [data-testid="stFileUploaderDropzone"]:hover,
+[class*="st-key-home_drop_zone"] [data-testid="stFileUploaderDropzone"]:hover,
+[data-testid="stFileUploaderDropzone"][data-dragging="true"] {
+  border-color: var(--current) !important; background: var(--slate-2) !important; }
 .ep-pw-rules { margin: -.2rem 0 .7rem; padding: .7rem .9rem; border: 1px solid var(--line); border-radius: 12px;
   background: var(--ink); font-size: .78rem; color: var(--mist); }
 .ep-pw-rules b { color: var(--plaster); font-weight: 600; }
