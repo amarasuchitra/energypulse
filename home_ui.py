@@ -269,7 +269,7 @@ def render_home_tab(tariff_rate: float, home_details=None, db=None, household_id
     scenario, tod = meter_settings()
     owned, switched, device_notes = household_devices(home_details)
     if not owned and not switched:
-        st.info("Your home has no appliances yet. Open Settings, choose Edit home and add the appliances "
+        st.info("Your home has no appliances yet. Open My appliances and add the appliances "
                 "you have. Only what you add is shown here.")
         return
     state["fans"] = {k: v for k, v in state["fans"].items() if k in {f["key"] for f in switched}}
@@ -309,6 +309,6 @@ def render_home_tab(tariff_rate: float, home_details=None, db=None, household_id
     st.caption("No meter is connected: this is a simulated meter, shown at the current time on your clock. "
                "Drag the timeline to look back over today. The house shows only what "
                f"you entered during setup: {len(owned)} appliance(s) found from the meter and "
-               f"{len(switched)} device(s) shown from their switch. Add or remove items under Settings, Edit home.")
+               f"{len(switched)} device(s) shown from their switch. Add, change or photograph items on the My appliances page.")
     for note in device_notes:
         st.caption(note)

@@ -65,3 +65,6 @@ data/live_meter.csv
 
 # The appliance-detection model is shipped, so the app does not have to train on start-up.
 !models/nilm_model.pkl
+
+# Appliance photos are personal data, kept encrypted on the server only
+data/photos/

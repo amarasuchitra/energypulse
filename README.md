@@ -14,6 +14,19 @@ dataset (34,168 hourly rows, December 2006 – November 2010) and a trained
 > meter feed. To use your own readings, upload a CSV — see
 > [Using your own data](#using-your-own-data).
 
+## When the model is not known: estimate, rating plate, web look-up (V4.2)
+
+Every appliance can be described in one of three ways, on the setup screen or later on the **My appliances** page:
+
+- **Pick a model class** from the catalogue.
+- **Not sure: estimate it.** Choose the size and roughly how old it is. The specification is a typical one of that size, using more power for its age (motors and compressors about 1.5% a year, up to 30%), and the Upgrades page compares it with the most efficient model of its kind.
+- **Look it up, read the plate, or type figures.**
+  - *Photo of the rating plate* (`nameplate.py`): read on the server with Tesseract, free and offline. Power, voltage, current, frequency, star rating, capacity and model number are picked out; if only the current or the motor size (HP) is printed, power is worked out from it. Cooling capacity and motor output are not mistaken for the power drawn.
+  - *Web look-up* (`spec_search.py`): searches the brand and model (DuckDuckGo's plain results page, Bing as a fallback; no paid service or key), reads the top result pages, and keeps the figures the sources agree on. The figures are shown with how many sources agreed and links to them, and are used only when the user accepts them.
+  - *Type them in.* Every figure stays editable.
+
+Photos are stored encrypted per household. Items can be added, changed or removed at any time on the My appliances page, and the 3D home, forecast and advice follow straight away.
+
 ## Appliance catalogue, specifications and home types (V4.1)
 
 - **Pick appliances from a list** (`catalog.py`): 26 appliance types in six categories, with 44 model classes. Each model class carries rated and running power, standby power, 230 V supply, rated and running current, power factor, BEE star rating and energy per year. The figures are typical for the class; the app reminds the user that their own rating plate gives exact values.

@@ -991,13 +991,7 @@ def _render_onboard_step1(od):
         st.button(T("btn_back"), width="stretch", disabled=True, key="ob_back1")
 
 
-def spec_table(spec):
-    """The specification of one appliance model class, as the app's quiet table."""
-    rows = "".join(f"<tr><td class='n'>{k}</td><td class='v'>{v}</td></tr>" for k, v in catalog.spec_lines(spec))
-    note = f"<p style='color:var(--mist);font-size:.78rem;margin:.4rem 0 0'>{spec['note']}</p>" if spec.get("note") else ""
-    return (f"<table class='ep-rows'>{rows}</table>{note}"
-            "<p style='color:var(--faint);font-size:.74rem;margin:.35rem 0 0'>Typical figures for this class of model. "
-            "The rating plate on your own appliance gives its exact values.</p>")
+from appliance_manager import spec_table, spec_editor, render_page as render_my_appliances
 
 
 def _render_onboard_step2(od):
@@ -1036,7 +1030,7 @@ def _render_onboard_step2(od):
         type_options = ["Cooling", "Heating", "Kitchen", "Laundry", "Electronics", "Lighting", "Other"]
         kind = c2.selectbox(T("category_label"), type_options, index=type_options.index("Other"), key="ob_app_type_custom")
         if c3.button(T("btn_add"), key="ob_add_app", type="primary", disabled=not custom.strip()):
-            items.append({"name": custom.strip()[:40], "type": kind, "usage": "Medium", "icon": ""})
+            items.append({"name": custom.strip()[:40], "type": kind, "usage": "Medium", "icon": "", "spec_mode": "own", "own": {}})
             st.rerun()
 
     if items:
@@ -1048,22 +1042,13 @@ def _render_onboard_step2(od):
             items[i] = item
         t = catalog.get_type(item.get("type_key", ""))
         with st.container(border=True):
-            cols = st.columns([1.5, 2.2, 1.6, 0.9], vertical_alignment="center")
+            cols = st.columns([1.6, 1.6, 0.9], vertical_alignment="center")
             cols[0].markdown(f'<div class="ep-row-name">{item["name"]}</div>'
                              f'<div class="ep-row-kind">{item.get("type", "")}</div>', unsafe_allow_html=True)
-            if t:
-                labels = [m.label for m in t.models]
-                ids = [m.id for m in t.models]
-                current = ids.index(item["model_id"]) if item.get("model_id") in ids else 0
-                choice = cols[1].selectbox("Model", labels, index=current, key=f"ob_model_{i}_{t.key}",
-                                           label_visibility="collapsed")
-                item["model_id"] = ids[labels.index(choice)]
-            else:
-                cols[1].caption("Typed in by you; no specification available.")
-            item["usage"] = cols[2].select_slider(T("typical_usage"), options=["Low", "Medium", "High"],
+            item["usage"] = cols[1].select_slider(T("typical_usage"), options=["Low", "Medium", "High"],
                                                   value=item.get("usage", "Medium"), key=f"app_usage_{i}",
                                                   label_visibility="collapsed")
-            act = cols[3]
+            act = cols[2]
             if t and act.button("Add another", key=f"ob_more_{i}"):
                 items.insert(i + 1, catalog.item_for(t.key, item.get("model_id"), item.get("usage", "Medium")))
                 st.rerun()
@@ -1073,11 +1058,8 @@ def _render_onboard_step2(od):
                     key = f"ob_pick_{t.category}"
                     st.session_state[key] = [n for n in st.session_state.get(key, []) if n != t.name]
                 st.rerun()
-            if t:
-                spec = catalog.specs(item["model_id"])
-                with st.expander(f"Specification: {spec['rated_w']:.0f} W, {spec['voltage_v']:.0f} V, "
-                                 f"{spec['current_a']:.2f} A"):
-                    st.markdown(spec_table(spec), unsafe_allow_html=True)
+            if spec_editor(item, current_household_id(), f"ob_{i}_{item.get('type_key', 'x')}"):
+                st.rerun()
 
     st.markdown("")
     if not items:
@@ -1364,7 +1346,7 @@ def render_brief_section(brief):
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
 
-PAGES = [("home", "tab_home"), ("overview", "tab_overview"), ("appliances", "tab_appliances"),
+PAGES = [("home", "tab_home"), ("devices", "tab_devices"), ("overview", "tab_overview"), ("appliances", "tab_appliances"),
          ("analysis", "tab_analysis"), ("save", "tab_save"), ("goals", "tab_goals"),
          ("safety", "tab_safety"), ("bills", "tab_bills"), ("upgrades", "tab_upgrades"),
          ("trends", "tab_trends"), ("family", "tab_family"), ("alerts", "tab_notifications"),
@@ -1377,6 +1359,7 @@ PAGE_TITLES = {
     "appliances": ("What the meter gives away", "Every appliance found in the main-meter signal, and how long it ran."),
     "analysis": ("Where the power goes", "Units and rupees, by appliance and by time of day."),
     "save": ("Changes worth making", "Only suggestions a household could follow, each with its working shown."),
+    "devices": ("My appliances", "Add, describe and photograph what you have. Everything else follows this list."),
     "goals": ("Stay on target", "A monthly goal, your planned hours, similar homes and your carbon."),
     "safety": ("Faults and overload", "What ran too long, what is wearing out, and how close you come to tripping the breaker."),
     "upgrades": ("Is it worth buying?", "A new appliance, rooftop solar or a backup, costed from your own use."),
@@ -2245,6 +2228,10 @@ def _main_dashboard_inner():
         prepare_meter("page")
         {"goals": toolkit_ui.render_goals, "safety": toolkit_ui.render_safety,
          "upgrades": toolkit_ui.render_upgrades}[page](toolkit_ctx())
+
+    if page == "devices":
+        head()
+        render_my_appliances(get_db(), household_id, section, notify)
 
     if page == "help":
         head()

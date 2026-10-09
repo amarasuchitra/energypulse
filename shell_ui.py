@@ -47,6 +47,7 @@ _ICON_PATHS = {
     "family": "<circle cx='9' cy='8' r='3'/><path d='M3 20a6 6 0 0 1 12 0'/><circle cx='17' cy='9' r='2.3'/><path d='M16 14.5a5 5 0 0 1 5 5.5'/>",
     "alerts": "<path d='M6 17V11a6 6 0 0 1 12 0v6l2 2H4z'/><path d='M10 21h4'/>",
     "assistant": "<path d='M4 5h16v11H9l-5 4z'/><path d='M8 9h8M8 12h5'/>",
+    "devices": "<rect x='3' y='7' width='8' height='12' rx='1.5'/><rect x='13' y='3' width='8' height='16' rx='1.5'/><path d='M7 15.5h.01M17 15.5h.01M17 7h.01'/>",
     "safety": "<path d='M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z'/><path d='M9 12l2 2 4-4'/>",
     "upgrades": "<circle cx='12' cy='12' r='4'/><path d='M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2'/>",
     "goals": "<circle cx='12' cy='12' r='9'/><circle cx='12' cy='12' r='5'/><circle cx='12' cy='12' r='1'/>",

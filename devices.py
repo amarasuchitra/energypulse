@@ -97,8 +97,8 @@ def _item_name(item) -> Tuple[str, str]:
 
 def _item_spec(item) -> Optional[dict]:
     """The catalogue specification of a picked appliance (None for typed-in items)."""
-    from catalog import specs
-    return specs(item.get("model_id", "")) if isinstance(item, dict) else None
+    from catalog import effective_specs
+    return effective_specs(item) if isinstance(item, dict) else None
 
 
 _CATEGORY_ROOM = {"Cooling": "living", "Kitchen": "kitchen", "Laundry": "utility", "Water and heating": "bathroom",

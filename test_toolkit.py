@@ -348,3 +348,95 @@ def test_running_or_idle_minutes():
     on = [0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1]
     assert _switched_on(on, 3, False) == [0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1]   # a short rest is still "on"
     assert _switched_on(on, 3, True) == [1] * len(on)                                  # always-on appliances
+
+
+def _plate_image(lines):
+    import io
+    from PIL import Image, ImageDraw, ImageFont
+    img = Image.new("RGB", (900, 70 + 60 * len(lines)), "white")
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", 34)
+    except OSError:
+        font = ImageFont.load_default()
+    for i, line in enumerate(lines):
+        draw.text((30, 30 + 60 * i), line, fill="black", font=font)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_rating_plate_is_read_from_a_photo():
+    from nameplate import parse_plate, read_plate
+    text, ok = read_plate(_plate_image(["REFRIGERATOR", "Model No: RT28K3", "Rated Voltage: 230V~ 50Hz",
+                                        "Rated Power: 150 W", "Rated Current: 0.8 A", "Capacity: 253 L", "3 Star"]))
+    if ok is False:
+        pytest.skip("Tesseract is not installed here")
+    figures = parse_plate(text)
+    assert figures["rated_w"] == 150 and figures["voltage_v"] == 230 and figures["current_a"] == 0.8
+    assert figures["star"] == 3 and figures["capacity"].startswith("253") and figures["frequency_hz"] == 50
+
+
+def test_plate_text_rules():
+    from nameplate import parse_plate
+    ac = parse_plate("Cooling Capacity 5200 W\nPower Consumption 1580 W\n230V 50Hz  7.2A  5 Star")
+    assert ac["rated_w"] == 1580 and ac["current_a"] == 7.2 and ac["star"] == 5     # cooling output is not the input
+    pump = parse_plate("WATER PUMP 1 HP 220-240V 50Hz 4.2A")
+    assert pump["voltage_text"] == "220-240 V" and pump["from_current"] and 700 < pump["rated_w"] < 900
+    assert parse_plate("Capacity: 15 Ltrs  Rated Power: 2kW  230V")["rated_w"] == 2000
+    assert parse_plate("1 HP 230V")["from_hp"] and parse_plate("")["lines"] == []
+
+
+def test_unknown_or_own_appliance_specifications(tmp_path, monkeypatch):
+    import catalog
+    import nameplate
+    old = catalog.item_for("fridge")
+    old.update(spec_mode="estimate", size="190 L", age_years=12)
+    est = catalog.effective_specs(old)
+    new = catalog.specs("fridge_sd_190")
+    assert est["source"] == "estimated" and est["running_w"] > new["running_w"] and est["star"] is None
+    assert catalog.efficient_saving(est) > 0.1
+    young = dict(old, age_years=0)
+    assert catalog.effective_specs(young)["running_w"] == new["running_w"]
+    own = catalog.item_for("ac")
+    own.update(spec_mode="own", photos=["p1"], own={"rated_w": 1580, "voltage_v": 230, "star": 5, "model_no": "AR18"})
+    spec = catalog.effective_specs(own)
+    assert spec["source"] == "rating plate" and spec["rated_w"] == 1580 and spec["detector"] == "ac"
+    assert abs(spec["current_a"] - 1580 / (230 * spec["power_factor"])) < 0.01 and catalog.efficient_saving(spec) == 0
+    custom = {"name": "Sewing machine", "type": "Other", "spec_mode": "own", "own": {"rated_w": 100}}
+    assert catalog.effective_specs(custom)["kind"] == "generic"
+    from devices import household_devices
+    owned, switched, _ = household_devices({"appliances": [own, custom]})
+    assert owned == ("ac",) and switched[0]["kw"] == 0.085
+    # photos are kept encrypted, per household
+    import integrity
+    monkeypatch.setattr(integrity, "KEY_FILE", str(tmp_path / "key"))
+    monkeypatch.setattr(nameplate, "PHOTO_DIR", str(tmp_path / "photos"))
+    pid = nameplate.store_photo("house-1", b"\x89PNG fake photo")
+    assert nameplate.load_photo("house-1", pid) == b"\x89PNG fake photo"
+    assert nameplate.load_photo("house-2", pid) is None
+    raw = open(nameplate._photo_path("house-1", pid), "rb").read()
+    assert b"fake photo" not in raw
+
+
+def test_web_look_up_reads_sources_and_keeps_what_agrees():
+    from spec_search import look_up
+    ddg = """<html><body>
+      <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fshop.example%2Fgl-b201">LG GL-B201 190 L</a>
+      <a class="result__a" href="https://www.youtube.com/watch?v=1">video</a>
+      <a class="result__a" href="https://review.example/lg-190">LG 190 L review</a>
+      <a class="result__a" href="https://other.example/specs">Specs</a></body></html>"""
+    pages = {
+        "https://shop.example/gl-b201": "<table><tr><th>Power Consumption</th><td>120 W</td></tr>"
+                                        "<tr><th>Voltage</th><td>230 V</td></tr><tr><th>Capacity</th><td>190 L</td></tr>"
+                                        "<tr><th>Energy rating</th><td>3 Star</td></tr></table>",
+        "https://review.example/lg-190": "<p>Rated power: 120 W. Works on 230V supply, 50 Hz.</p><p>3 star energy rating</p>",
+        "https://other.example/specs": "<div>Input power 135 W</div><div>Capacity 190 Litres</div>",
+    }
+    got = look_up("LG GL-B201", fetch_get=lambda url, **kw: pages.get(url), fetch_post=lambda url, data: ddg)
+    assert got["ok"] and len(got["sources"]) == 3 and all("youtube" not in s["url"] for s in got["sources"])
+    assert got["figures"]["rated_w"] == 120 and got["agree"]["rated_w"] == 2      # two of three agree
+    assert got["figures"]["star"] == 3 and got["figures"]["voltage_v"] == 230
+    # nothing reachable: says so instead of inventing figures
+    offline = look_up("anything", fetch_get=lambda url, **kw: None, fetch_post=lambda url, data: None)
+    assert not offline["ok"] and offline["figures"] == {}

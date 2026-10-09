@@ -186,7 +186,12 @@ def efficient_saving(spec: dict) -> float:
     """
     Share of energy a 5-star model of the same class would save.  Each star
     step is roughly 8% less energy on the BEE scale; an estimate, not a test result.
+    For an appliance whose model is not known, it is compared with the most
+    efficient model of its kind in the catalogue.
     """
+    if spec.get("source") in ("estimated", "rating plate", "entered", "web") and spec.get("type") in _TYPES:
+        best = min(m.running_w for m in _TYPES[spec["type"]].models)
+        return round(max(0.0, 1 - best / max(spec["running_w"], 1e-9)), 3) if spec.get("star") != 5 else 0.0
     star = spec.get("star")
     if not star or star >= 5:
         return 0.0
@@ -198,3 +203,87 @@ def item_for(type_key: str, model_id: Optional[str] = None, usage: str = "Medium
     t = _TYPES[type_key]
     model = model_id if model_id in _MODELS else default_model(type_key).id
     return {"name": t.name, "type": t.category, "usage": usage, "icon": "", "type_key": t.key, "model_id": model}
+
+
+# --------------------------------------------------------- when the model is not known
+# Motors and compressors lose efficiency with age (worn bearings, low gas,
+# clogged coils); heating elements scale up more slowly; electronics hardly.
+AGE_DRIFT = {"ac": 0.015, "fridge": 0.015, "water_pump": 0.015, "washing_machine": 0.01, "fan": 0.01,
+             "cooler": 0.01, "mixer": 0.01, "vacuum": 0.01, "geyser": 0.01, "heater": 0.005}
+SPEC_MODES = {"catalog": "Pick a model class", "estimate": "Not sure: estimate it from its age",
+              "own": "Look it up, read the plate, or type figures"}
+
+
+def sizes(type_key: str) -> List[str]:
+    t = _TYPES[type_key]
+    return list(dict.fromkeys(m.capacity or m.label for m in t.models))
+
+
+def _pf_current(rated_w: float, voltage: float, pf: float) -> float:
+    return round(rated_w / (max(voltage, 1.0) * max(pf, 0.1)), 2)
+
+
+def effective_specs(item: dict) -> Optional[dict]:
+    """
+    The specification the app uses for one listed appliance, whichever way the
+    user described it:
+      catalog   a model class from the list
+      estimate  not sure of the model: a typical one of the chosen size, made
+                less efficient for its age
+      own       figures from the rating plate (read from a photo) or typed in
+    """
+    if not isinstance(item, dict):
+        return None
+    t = _TYPES.get(item.get("type_key", ""))
+    mode = item.get("spec_mode", "catalog")
+    if mode == "estimate" and t:
+        size = item.get("size")
+        base = next((m for m in t.models if (m.capacity or m.label) == size), default_model(t.key))
+        spec = dict(specs(base.id))
+        age = max(0, min(30, int(item.get("age_years", 8) or 0)))
+        drift = min(0.30, AGE_DRIFT.get(t.key, 0.0) * age)
+        spec.update({
+            "source": "estimated", "age_years": age, "star": None if age >= 8 else spec["star"],
+            "running_w": round(spec["running_w"] * (1 + drift), 0),
+            "label": f"Estimated: {base.capacity or base.label}, about {age} years old",
+            "note": (f"Model not known. Worked out from a typical {t.name.lower()} of this size"
+                     + (f", using about {drift * 100:.0f}% more power for its age." if drift else ".")),
+        })
+        spec["running_current_a"] = _pf_current(spec["running_w"], spec["voltage_v"], spec["power_factor"])
+        spec["yearly_kwh"] = round(spec["running_w"] * t.duty * t.hours_per_day * 365 / 1000.0, 0)
+        return spec
+    if mode == "own":
+        own = item.get("own") or {}
+        rated = float(own.get("rated_w") or 0)
+        if rated <= 0:
+            return specs(item.get("model_id", "")) if t else None
+        volts = float(own.get("voltage_v") or SUPPLY_V)
+        pf = float(own.get("power_factor") or (default_model(t.key).pf if t else 0.9))
+        base = specs(item["model_id"]) if t and item.get("model_id") in _MODELS else (specs(default_model(t.key).id) if t else None)
+        ratio = (base["running_w"] / base["rated_w"]) if base else 0.85
+        running = float(own.get("running_w") or round(rated * ratio, 0))
+        hours = t.hours_per_day if t else 2.0
+        duty = t.duty if t else 1.0
+        star = own.get("star") or None
+        return {
+            "model_id": None, "type": t.key if t else "custom", "type_name": t.name if t else item.get("name", "Appliance"),
+            "category": t.category if t else item.get("type", "Other"),
+            "label": (" ".join(x for x in [own.get("brand", ""), own.get("model_no", "")] if x).strip()
+                      or (f"{own['capacity']}, own figures" if own.get("capacity") else "Own figures")),
+            "rated_w": rated, "running_w": running, "standby_w": float(own.get("standby_w") or 0),
+            "voltage_v": volts, "frequency_hz": int(own.get("frequency_hz") or SUPPLY_HZ), "power_factor": pf,
+            "current_a": float(own.get("current_a") or _pf_current(rated, volts, pf)),
+            "running_current_a": _pf_current(running, volts, pf),
+            "star": int(star) if star else None, "capacity": own.get("capacity", ""),
+            "note": (f"Looked up on the web for \"{own['looked_up']}\" and checked by you." if own.get("looked_up")
+                     else "From the rating plate photo, checked by you." if item.get("photos") else "Figures you entered."),
+            "hours_per_day": hours, "yearly_kwh": round(running * duty * hours * 365 / 1000.0, 0),
+            "detector": t.detector if t else None, "kind": t.kind if t else "generic",
+            "idle_reason": t.idle_reason if t else "",
+            "source": "web" if own.get("looked_up") else "rating plate" if item.get("photos") else "entered",
+            "source_urls": own.get("source_urls", []),
+        }
+    spec = specs(item.get("model_id", "")) if t else None
+    if spec:
+        spec["source"] = "catalogue"
+    return spec
