@@ -242,6 +242,8 @@ def replacement_table(month_kwh: Dict[str, float], rate: float, overrides: Optio
                      "now_kwh": month_kwh[key], "saved_kwh": saved_kwh, "saved_rs": saved_rs,
                      "price": spec["price"], "saving_pct": spec["saving"] * 100,
                      "payback_months": spec["price"] / saved_rs if saved_rs > 0.5 else None})
+        if spec["saving"] <= 0:
+            rows[-1]["what"] = "already 5-star"
     return sorted(rows, key=lambda r: r["payback_months"] if r["payback_months"] else 1e9)
 
 

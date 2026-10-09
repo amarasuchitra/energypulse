@@ -122,12 +122,14 @@ def _background(n: int, rng, start_minute: int = 0) -> np.ndarray:
 def random_ratings(rng) -> Dict[str, float]:
     """Appliance sizes for one home."""
     return {
-        "fridge": float(rng.uniform(0.10, 0.18)),
-        "ac": float(rng.uniform(1.1, 1.9)),
+        # Ranges cover every model class in catalog.py, so the detector has
+        # seen appliances of the sizes users can pick.
+        "fridge": float(rng.uniform(0.09, 0.21)),
+        "ac": float(rng.uniform(0.95, 1.9)),
         "geyser": float(rng.choice([1.5, 2.0, 2.0, 3.0]) * rng.uniform(0.95, 1.05)),
-        "washing_machine": float(rng.uniform(0.35, 0.60)),
-        "water_pump": float(rng.uniform(0.55, 0.80)),
-        "microwave": float(rng.uniform(0.9, 1.3)),
+        "washing_machine": float(rng.uniform(0.28, 0.58)),
+        "water_pump": float(rng.uniform(0.45, 0.90)),
+        "microwave": float(rng.uniform(1.0, 1.45)),
     }
 
 

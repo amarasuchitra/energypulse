@@ -61,6 +61,7 @@ from notifications import get_notification_service
 from devices import household_devices
 from sessions import extract_sessions, flag_long_runs
 import toolkit_ui
+import catalog
 from toolkit import send_left_on
 from shell_ui import tc, apply_theme, theme_toggle, current_theme, inject_skin, page_header, sidebar_nav, login_hero, step_list, wordmark
 from clock import local_now, browser_tz, options as tz_options, set_tz, user_tz
@@ -990,75 +991,97 @@ def _render_onboard_step1(od):
         st.button(T("btn_back"), width="stretch", disabled=True, key="ob_back1")
 
 
+def spec_table(spec):
+    """The specification of one appliance model class, as the app's quiet table."""
+    rows = "".join(f"<tr><td class='n'>{k}</td><td class='v'>{v}</td></tr>" for k, v in catalog.spec_lines(spec))
+    note = f"<p style='color:var(--mist);font-size:.78rem;margin:.4rem 0 0'>{spec['note']}</p>" if spec.get("note") else ""
+    return (f"<table class='ep-rows'>{rows}</table>{note}"
+            "<p style='color:var(--faint);font-size:.74rem;margin:.35rem 0 0'>Typical figures for this class of model. "
+            "The rating plate on your own appliance gives its exact values.</p>")
+
+
 def _render_onboard_step2(od):
     section(T("ob_your_appliances"))
-    st.markdown(f'<div style="color:var(--mist);font-size:0.82rem;margin-bottom:0.8rem;">'
-                f'{T("ob_app_hint")}</div>',
+    st.markdown('<div style="color:var(--mist);font-size:0.84rem;margin-bottom:0.6rem;">'
+                'Pick the appliances in your home. Each one comes with its specification, and you can choose the '
+                'model class that matches yours. Only what you pick is shown in your 3D home.</div>',
                 unsafe_allow_html=True)
-    appliances = od.get("appliances", [])
-    if appliances:
-        for i, app in enumerate(appliances):
-            if not isinstance(app, dict):
-                app = {"name": str(app), "type": "Other", "usage": "Medium", "icon": ""}
-            app_name = localized_appliance_label(app.get("name", ""), st.session_state.get("lang", "en"))
-            app_type = localized_appliance_type(app.get("type", ""), st.session_state.get("lang", "en"))
-            cols = st.columns([2, 2, 0.8], vertical_alignment="center")
-            with cols[0]:
-                st.markdown(f'<div class="ep-row-name">{app_name}</div>'
-                            f'<div class="ep-row-kind">{app_type}</div>', unsafe_allow_html=True)
-            with cols[1]:
-                usage = st.select_slider(T("typical_usage"), options=["Low", "Medium", "High"],
-                    value=app.get("usage", "Medium"), key=f"app_usage_{i}")
-                if isinstance(app, dict) and i < len(od["appliances"]):
-                    od["appliances"][i]["usage"] = usage
-            with cols[2]:
-                if st.button("Remove", key=f"app_del_{i}"):
-                    od["appliances"].pop(i)
-                    st.rerun()
-        st.markdown("---")
-    with st.expander(T("add_appliance_expander"), expanded=not appliances):
-        add_cols = st.columns([2, 2, 1])
-        with add_cols[0]:
-            preset_pairs = [
-                (localized_appliance_label(p_name), p_name) for p_name, _ in APPLIANCE_PRESETS
-            ]
-            preset_label_to_name = dict(preset_pairs)
-            options = [label for label, _ in preset_pairs] + [T("custom_option")]
-            chosen = st.selectbox(T("appliance_label"), options, key="ob_app_preset")
-            custom_name = ""
-            if chosen == T("custom_option"):
-                custom_name = st.text_input(T("name_label"), placeholder=T("name_ph"), key="ob_app_custom")
-        with add_cols[1]:
-            type_options = ["Cooling", "Heating", "Kitchen", "Laundry", "Electronics", "Lighting", "Other"]
-            # The category follows the appliance picked; a custom item starts as "Other".
-            usual = {"Air Conditioner": "Cooling", "Refrigerator": "Kitchen", "Washing Machine": "Laundry",
-                     "Water Heater": "Heating", "Television": "Electronics", "Microwave": "Kitchen",
-                     "Lights & Fans": "Lighting"}.get(preset_label_to_name.get(chosen, ""), "Other")
-            app_type = st.selectbox(
-                T("category_label"),
-                [localized_appliance_type(t) for t in type_options],
-                index=type_options.index(usual), key=f"ob_app_type_{type_options.index(usual)}_{options.index(chosen)}")
-            type_label_to_value = {
-                localized_appliance_type(t): t for t in type_options
-            }
-        with add_cols[2]:
-            st.markdown('<div style="margin-top:1.8rem;"></div>', unsafe_allow_html=True)
-            if st.button(T("btn_add"), key="ob_add_app", type="primary"):
-                if chosen == T("custom_option"):
-                    name = custom_name if custom_name else T("custom_option")
-                else:
-                    name = preset_label_to_name.get(chosen, chosen)
-                canonical_type = type_label_to_value.get(app_type, "Other")
-                icon = ""
-                for p_name, p_icon in APPLIANCE_PRESETS:
-                    if p_name == name:
-                        icon = p_icon
-                        break
-                od["appliances"].append({"name": name, "type": canonical_type, "usage": "Medium", "icon": icon})
+    items = od.setdefault("appliances", [])
+    tabs = st.tabs(catalog.CATEGORIES + ["Something else"])
+    for tab, category in zip(tabs, catalog.CATEGORIES):
+        with tab:
+            types = catalog.types_in(category)
+            names = [t.name for t in types]
+            have = [t.name for t in types if any(i.get("type_key") == t.key for i in items if isinstance(i, dict))]
+            key = f"ob_pick_{category}"
+            if key not in st.session_state:
+                st.session_state[key] = have
+            picked = st.pills(category, names, selection_mode="multi", key=key, label_visibility="collapsed")
+            picked = set(picked or [])
+            changed = False
+            for t in types:
+                exists = any(isinstance(i, dict) and i.get("type_key") == t.key for i in items)
+                if t.name in picked and not exists:
+                    items.append(catalog.item_for(t.key))
+                    changed = True
+                elif t.name not in picked and exists:
+                    od["appliances"] = items = [i for i in items if not (isinstance(i, dict) and i.get("type_key") == t.key)]
+                    changed = True
+            if changed:
                 st.rerun()
+    with tabs[-1]:
+        st.caption("Not in the list? Add it by name. It is placed in your home and shown from its switch.")
+        c1, c2, c3 = st.columns([2, 2, 1], vertical_alignment="bottom")
+        custom = c1.text_input(T("name_label"), placeholder="For example: sewing machine", key="ob_app_custom")
+        type_options = ["Cooling", "Heating", "Kitchen", "Laundry", "Electronics", "Lighting", "Other"]
+        kind = c2.selectbox(T("category_label"), type_options, index=type_options.index("Other"), key="ob_app_type_custom")
+        if c3.button(T("btn_add"), key="ob_add_app", type="primary", disabled=not custom.strip()):
+            items.append({"name": custom.strip()[:40], "type": kind, "usage": "Medium", "icon": ""})
+            st.rerun()
+
+    if items:
+        st.markdown("<div style='height:.6rem'></div>", unsafe_allow_html=True)
+        section(f"Your list ({len(items)})")
+    for i, item in enumerate(list(items)):
+        if not isinstance(item, dict):
+            item = {"name": str(item), "type": "Other", "usage": "Medium"}
+            items[i] = item
+        t = catalog.get_type(item.get("type_key", ""))
+        with st.container(border=True):
+            cols = st.columns([1.5, 2.2, 1.6, 0.9], vertical_alignment="center")
+            cols[0].markdown(f'<div class="ep-row-name">{item["name"]}</div>'
+                             f'<div class="ep-row-kind">{item.get("type", "")}</div>', unsafe_allow_html=True)
+            if t:
+                labels = [m.label for m in t.models]
+                ids = [m.id for m in t.models]
+                current = ids.index(item["model_id"]) if item.get("model_id") in ids else 0
+                choice = cols[1].selectbox("Model", labels, index=current, key=f"ob_model_{i}_{t.key}",
+                                           label_visibility="collapsed")
+                item["model_id"] = ids[labels.index(choice)]
+            else:
+                cols[1].caption("Typed in by you; no specification available.")
+            item["usage"] = cols[2].select_slider(T("typical_usage"), options=["Low", "Medium", "High"],
+                                                  value=item.get("usage", "Medium"), key=f"app_usage_{i}",
+                                                  label_visibility="collapsed")
+            act = cols[3]
+            if t and act.button("Add another", key=f"ob_more_{i}"):
+                items.insert(i + 1, catalog.item_for(t.key, item.get("model_id"), item.get("usage", "Medium")))
+                st.rerun()
+            if act.button("Remove", key=f"app_del_{i}"):
+                items.pop(i)
+                if t and not any(isinstance(x, dict) and x.get("type_key") == t.key for x in items):
+                    key = f"ob_pick_{t.category}"
+                    st.session_state[key] = [n for n in st.session_state.get(key, []) if n != t.name]
+                st.rerun()
+            if t:
+                spec = catalog.specs(item["model_id"])
+                with st.expander(f"Specification: {spec['rated_w']:.0f} W, {spec['voltage_v']:.0f} V, "
+                                 f"{spec['current_a']:.2f} A"):
+                    st.markdown(spec_table(spec), unsafe_allow_html=True)
+
     st.markdown("")
-    if not od.get("appliances"):
-        st.caption("Add at least one appliance to continue. Your 3D home shows only what you add here.")
+    if not items:
+        st.caption("Pick at least one appliance to continue. Your 3D home shows only what you pick here.")
     c_back, c_next = st.columns([1, 1])
     with c_back:
         if st.button(T("btn_back"), width="stretch", key="ob_back2"):
@@ -1066,7 +1089,7 @@ def _render_onboard_step2(od):
             st.rerun()
     with c_next:
         if st.button(T("btn_next_rate"), width="stretch", type="primary", key="ob_next2",
-                     disabled=not od.get("appliances")):
+                     disabled=not items):
             st.session_state.onboard_step = 3
             st.rerun()
 
@@ -1170,6 +1193,49 @@ def todays_brief(tariff_rate, owned, household_id, user_name, user_email):
 def _now_cached(date, scenario, owned, rate, tod, minute):
     from daily_brief import right_now
     return right_now(detected_history(date, scenario, owned), owned, Tariff(rate=rate, tod_enabled=tod), minute)
+
+
+@st.cache_data(show_spinner=False)
+def _tomorrow_cached(date, scenario, owned, rate, tod):
+    from daily_brief import tomorrow_outlook
+    from meter_source import scenario_place, temperatures
+    from weather import forecast_high
+    brief = _brief_cached(date, scenario, owned, rate, tod) or {}
+    temps = temperatures(date, scenario)
+    nxt = pd.Timestamp(date) + pd.Timedelta(days=1)
+    return tomorrow_outlook(detected_history(date, scenario, owned), owned, Tariff(rate=rate, tod_enabled=tod), brief,
+                            temps=temps, temp_tomorrow=forecast_high(nxt, scenario_place(scenario)[0]))
+
+
+def render_tomorrow_section(tariff_rate, owned):
+    """What tomorrow is expected to need, and the plan for it."""
+    if not owned:
+        return
+    scenario, tod = meter_settings()
+    t = _tomorrow_cached(today_str(), scenario, tuple(owned), float(tariff_rate), tod)
+    section(f"Tomorrow, {t['date_label']}")
+    left, right = st.columns([1, 1.3], gap="medium")
+    with left:
+        c1, c2 = st.columns(2)
+        metric_card(c1, label="Expected tomorrow", value=f"{t['total_kwh']:.1f}", unit="units",
+                    sub=f"about Rs. {t['total_cost']:.0f}")
+        metric_card(c2, label="Forecast high", value=f"{t['temp']:.0f}" if t["temp"] is not None else "-", unit="C",
+                    sub="simulated weather")
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        _rows_html = "".join(f"<tr><td class='n'>{a['name']}</td><td class='v'>{a['kwh']:.2f} units<small>Rs. {a['cost']:.1f}</small></td></tr>"
+                             for a in t["appliances"])
+        st.markdown(f"<table class='ep-rows'>{_rows_html}</table>", unsafe_allow_html=True)
+    with right:
+        with st.container(border=True):
+            section("Plan for tomorrow")
+            if t["plan"]:
+                st.markdown("".join(f"<div class='ep-plan-item'><i>{n}</i><b style='grid-column:2/4;font-weight:500'>{line}</b></div>"
+                                    for n, line in enumerate(t["plan"], 1)), unsafe_allow_html=True)
+            else:
+                st.caption("Nothing to plan: no change would save more than the small-saving limit.")
+            st.caption("Built from your usual times on the meter, tomorrow's weekday and forecast temperature, "
+                       "and the changes worth making.")
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
 
 def render_now_section(tariff_rate, owned):
@@ -2068,6 +2134,7 @@ def _main_dashboard_inner():
         prepare_meter("page")
         render_now_section(tariff_rate, owned)
         render_brief_section(todays_brief(tariff_rate, owned, household_id, user_display, auth_email))
+        render_tomorrow_section(tariff_rate, owned)
 
     def recorded_block():
         """Next hour and next month from the recorded reference dataset, with the hybrid model."""
@@ -2170,7 +2237,8 @@ def _main_dashboard_inner():
                 "rate": float(tariff_rate), "db": db_, "household_id": household_id, "user_name": user_display,
                 "people": household_people(db_, household_id, user_display, auth_email),
                 "section": section, "metric_card": metric_card, "layout": PLOTLY_LAYOUT, "ledger": get_ledger(),
-                "brief": todays_brief(tariff_rate, owned, household_id, user_display, auth_email)}
+                "brief": todays_brief(tariff_rate, owned, household_id, user_display, auth_email),
+                "specs": __import__("devices").appliance_specs(home_details)}
 
     if page in ("goals", "safety", "upgrades"):
         head(meter_chip, "sim")

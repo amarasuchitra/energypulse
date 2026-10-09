@@ -312,3 +312,13 @@ body { position: relative; }
 .confirm button:focus-visible { outline: 2px solid var(--current); outline-offset: 2px; }
 @keyframes confirm-in { from { opacity: 0; transform: translate(-50%, -46%); } to { opacity: 1; transform: translate(-50%, -50%); } }
 @media (prefers-reduced-motion: reduce) { .confirm { animation: none; } }
+
+/* running / idle */
+#list li.is-idle .badge { color: var(--c); background: transparent; box-shadow: inset 0 0 0 1.5px var(--c); }
+#list li.is-idle .state { color: var(--c); opacity: .8; }
+.detail .st-on { color: var(--ok, #5fcb8f); } .detail .st-idle { color: var(--current); } .detail .st-off { color: var(--mist); }
+details.specs { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; }
+details.specs summary { cursor: pointer; font-size: 12.5px; color: var(--plaster); font-weight: 600; }
+table.spec { width: 100%; border-collapse: collapse; margin: 6px 0 2px; font-size: 12px; }
+table.spec th { text-align: left; font-weight: 500; color: var(--mist); padding: 3px 8px 3px 0; white-space: nowrap; vertical-align: top; }
+table.spec td { color: var(--plaster); padding: 3px 0; font-variant-numeric: tabular-nums; }

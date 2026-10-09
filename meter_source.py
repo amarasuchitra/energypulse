@@ -89,8 +89,13 @@ def habits_key(home_details: Optional[dict]) -> str:
         size = int(hd.get("home_size") or 0)
     except (TypeError, ValueError):
         size = 0
+    if size <= 0:                                   # no size given: a typical one for the home type
+        size = TYPE_AREA.get(str(hd.get("home_type") or ""), 0)
+    from devices import household_ratings
+    rated = ",".join(f"{k}:{v}" for k, v in sorted(household_ratings(hd).items()))
     city = "".join(ch for ch in str(hd.get("city") or "").strip().lower() if ch.isalpha() or ch == " ")[:30]
-    return f"{parts};people={people}" + (f";size={size}" if size > 0 else "") + (f";city={city}" if city else "")
+    return (f"{parts};people={people}" + (f";size={size}" if size > 0 else "") + (f";city={city}" if city else "")
+            + (f";rated={rated}" if rated else ""))
 
 
 def with_habits(scenario: str, home_details: Optional[dict]) -> str:
@@ -116,6 +121,22 @@ def split_scenario(scenario: str):
     return (name if name in SCENARIOS else list(SCENARIOS)[0]), usage, people
 
 
+TYPE_AREA = {"Studio": 450, "Apartment": 1000, "Independent House": 1400, "Villa": 2200}
+
+
+def scenario_ratings(scenario: str) -> dict:
+    """Running power (kW) of the household's chosen appliance models, from the scenario key."""
+    fields = dict(p.partition("=")[::2] for p in str(scenario).partition("||")[2].split(";") if "=" in p)
+    out = {}
+    for pair in filter(None, fields.get("rated", "").split(",")):
+        k, _, v = pair.partition(":")
+        try:
+            out[k] = float(v)
+        except ValueError:
+            pass
+    return out
+
+
 def scenario_place(scenario: str):
     """(city, floor area in sq ft) carried in the scenario key; ('', 1000.0) when not given."""
     fields = dict(p.partition("=")[::2] for p in str(scenario).partition("||")[2].split(";") if "=" in p)
@@ -139,7 +160,9 @@ def detected_history(date: str, scenario: str, owned: Tuple[str, ...],
     """`days` of 1-minute detection results, ending at the end of `date`."""
     start = pd.Timestamp(date) - pd.Timedelta(days=days - 1)
     name, usage, people = split_scenario(scenario)
-    df = simulate_home(days=days, seed=777, start=str(start.date()),
+    from meter_sim import random_ratings
+    ratings = {**random_ratings(np.random.default_rng(777)), **scenario_ratings(scenario)}
+    df = simulate_home(days=days, seed=777, start=str(start.date()), ratings=ratings,
                        faults=SCENARIOS[name], include=owned, usage=usage, people=people,
                        temps=temperatures(date, scenario, days).tolist(),
                        area_sqft=scenario_place(scenario)[1])

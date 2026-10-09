@@ -361,6 +361,31 @@ function pointOnPath(u, t) {       // t in 0..1 along the route
   return u.pts[u.pts.length - 1].clone();
 }
 
+// ---------------------------------------------------------------- home type
+// The floor plan stays the same; what is around it follows the type of home.
+const extras = {};
+function buildExtras() {
+  const lawn = std(0x4f7d45, { roughness: 1 }), wallM = std(0xc9ced9), tankM = std(0x7d8aa8, { roughness: 0.5 });
+  const g = new THREE.Group();                              // independent house: plot, boundary wall, water tank
+  box(W + 5, 0.05, D + 5, -2.5, -0.36, -2.5, lawn, g).castShadow = false;
+  for (const [w, d, x, z] of [[W + 5, 0.12, -2.5, -2.5], [W + 5, 0.12, -2.5, D + 2.38], [0.12, D + 5, -2.5, -2.5], [0.12, D + 5, W + 2.38, -2.5]])
+    box(w, 0.5, d, x, -0.31, z, wallM, g);
+  for (const [x, z] of [[13.0, 8.0], [13.6, 8.0], [13.0, 8.6], [13.6, 8.6]]) cyl(0.04, 1.6, x, 0.5, z, wallM, g);
+  cyl(0.45, 0.7, 13.3, 1.65, 8.3, tankM, g);
+  scene.add(g); extras.house = g;
+  const v = new THREE.Group();                              // villa: also a pool
+  box(3.2, 0.06, 1.5, 2.0, -0.33, -2.2, std(0x3fa7d6, { roughness: 0.15, metalness: 0.1 }), v).castShadow = false;
+  box(3.5, 0.08, 1.8, 1.85, -0.36, -2.35, wallM, v).castShadow = false;
+  scene.add(v); extras.villa = v;
+}
+function setHomeType(type) {
+  if (!extras.house) buildExtras();
+  extras.house.visible = type === "Independent House" || type === "Villa";
+  extras.villa.visible = type === "Villa";
+  const bed = roomLabels.find((r) => r.base === "Bedroom");
+  if (bed) bed.el.textContent = type === "Studio" ? "Sleeping area" : "Bedroom";
+}
+
 // ---------------------------------------------------------------- pins
 const pinsEl = $("pins");
 const pins = {};
@@ -384,7 +409,7 @@ const roomLabels = ROOMS.filter((r) => r[0]).map(([name, x, z, w, d]) => {
   el.textContent = name;
   el.className = "room";
   pinsEl.appendChild(el);
-  return { el, pos: new THREE.Vector3(x + w / 2 + OX, 0.06, z + d * 0.72 + OZ) };
+  return { el, base: name, pos: new THREE.Vector3(x + w / 2 + OX, 0.06, z + d * 0.72 + OZ) };
 });
 const v3 = new THREE.Vector3();
 function place(el, pos, above) {
@@ -420,18 +445,45 @@ function describe(key) {
   if (isFan(key)) {
     const f = d.fans.find((x) => x.key === key), on = !!S.fans[key];
     return `<b>${f.name}</b><span class="what">${f.product}</span>
-      <span class="${on ? "on" : "off"}">${on ? `On, ${(f.kw * 1000).toFixed(0)} W` : "Off"}</span>
+      <span class="${on ? "on" : "off"}">${on ? `Running, ${(f.kw * 1000).toFixed(0)} W` : (f.specs && f.specs.standby_w ? `Off (standby ${f.specs.standby_w} W)` : "Off")}</span>
+      ${f.specs ? `<span>${specShort(f.specs)}</span>` : ""}
       <span>${f.room}. Click to switch it ${on ? "off" : "on"}.</span>
       <span>This session: ${(S.devKwh[key] || 0).toFixed(3)} units, ${rs(S.devCost[key] || 0)}</span>`;
   }
   const a = byKey(key); if (!a) return "";
-  const on = !!a.on[m], p = S.prefix[key];
-  const status = on ? `On, ${a.kw[m].toFixed(2)} kW` : a.locked ? "Always on, compressor resting" : "Off";
-  return `<b>${a.name}</b><span class="what">${a.product}</span>
-    <span class="${on ? "on" : "off"}" style="--c:${a.color}">${status}</span>
-    <span>Rated ${a.rated_kw} kW. ${a.category_label}. ${a.locked ? "Cannot be switched off." : "Click, then use its switch in the list."}</span>
+  const p = S.prefix[key], st = stateOf(a, m);
+  return `<b>${a.name}</b><span class="what">${a.specs ? a.specs.label : a.product}</span>
+    <span class="${st.cls === "off" ? "off" : "on"}" style="--c:${a.color}">${st.text}</span>
+    ${st.why ? `<span>${st.why}</span>` : ""}
+    <span>${a.specs ? specShort(a.specs) : `Rated ${a.rated_kw} kW`}. ${a.category_label}. ${a.locked ? "Cannot be switched off." : "Click, then use its switch in the list."}</span>
     <span>Today: ${dur(p.on[m + 1])} running, ${p.kwh[m + 1].toFixed(2)} units, ${rs(p.cost[m + 1])}</span>`;
 }
+// ------------------------------------------------ running or idle, and specifications
+// "Running" = drawing power now.  "On, idle" = switched on but resting (a
+// thermostat has cut the compressor, a washer is soaking).  "Off" = not on.
+function stateOf(a, m) {
+  const drawing = !!a.on[m], switched = a.run ? !!a.run[m] : drawing;
+  const reason = (a.specs && a.specs.idle_reason) || "it is resting between cycles";
+  if (drawing) return { cls: "on", text: `Running, ${a.kw[m] >= 1 ? a.kw[m].toFixed(2) + " kW" : (a.kw[m] * 1000).toFixed(0) + " W"}` };
+  if (switched) return { cls: "idle", text: "On, idle", why: `Switched on but drawing almost nothing: ${reason}.` };
+  return { cls: "off", text: "Off" };
+}
+function specShort(sp) {
+  if (!sp) return "";
+  return `${sp.rated_w.toFixed(0)} W rated &middot; ${sp.voltage_v.toFixed(0)} V &middot; ${sp.current_a.toFixed(2)} A`
+    + (sp.star ? ` &middot; ${sp.star}-star` : "");
+}
+function specTable(sp) {
+  if (!sp) return "";
+  const rows = [["Model class", sp.label], ...(sp.capacity ? [["Capacity", sp.capacity]] : []),
+    ["Rated power", `${sp.rated_w.toFixed(0)} W`], ["Running power", `${sp.running_w.toFixed(0)} W typical`],
+    ["Supply", `${sp.voltage_v.toFixed(0)} V AC, ${sp.frequency_hz} Hz`], ["Current", `${sp.current_a.toFixed(2)} A rated, ${sp.running_current_a.toFixed(2)} A running`],
+    ["Power factor", sp.power_factor.toFixed(2)], ["Standby", sp.standby_w ? `${sp.standby_w} W` : "none"],
+    ["Star rating", sp.star ? `${sp.star}-star (BEE)` : "not rated"], ["Per year", `about ${sp.yearly_kwh.toFixed(0)} units`]];
+  return `<table class="spec">${rows.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("")}</table>
+    <p class="never">Typical figures for this class of model; your appliance's rating plate gives its exact values.</p>`;
+}
+
 function showTip(key, clientX, clientY) {
   if (!key || !S.data) { tip.hidden = true; S.hover = null; return; }
   S.hover = key; tip.innerHTML = describe(key); tip.hidden = false;
@@ -500,6 +552,7 @@ function load(data) {
     pins[a.key].style.setProperty("--c", a.color);
   }
   if (!pins.meter) makePin("meter", "Main meter", "is-meter");
+  setHomeType(data.home_type || "Apartment");
   document.documentElement.dataset.theme = data.theme || "dark";
   applyTheme(data.theme || "dark");
   const css = getComputedStyle(document.documentElement);
@@ -595,7 +648,7 @@ function buildList() {
     ul.appendChild(li);
   };
   if (S.data.appliances.length) group("Found from the main meter");
-  for (const a of S.data.appliances) row(a.key, a.name, a.product, a.color, () => toggle(a.key), a.locked);
+  for (const a of S.data.appliances) row(a.key, a.name, a.specs ? a.specs.label : a.product, a.color, () => toggle(a.key), a.locked);
   if (S.data.fans.length) group("Shown from their switch");
   for (const f of S.data.fans) row(f.key, f.name, `${f.product}, ${f.room.toLowerCase()}`, "var(--fill)", () => toggleFan(f.key), false);
   $("quick").innerHTML = "";
@@ -717,12 +770,12 @@ function updatePanel(m) {
     if (S.mode === "test") {
       const asked = userOn(a.key, m), truth = a.truth ? !!a.truth[m] : asked;
       if (truth) { running++; if (on) found++; }
-      state.textContent = a.locked ? (on ? "Always on, detected" : "Always on, compressor resting")
-        : asked ? (on ? `Detected, ${a.kw[m].toFixed(2)} kW` : "On, not detected yet")
-        : (on ? "Detected, but you have it off" : "Off");
+      const drawing = a.truth ? !!a.truth[m] : on;
+      state.textContent = !asked ? (on ? "Off \u00b7 the meter thinks it is on" : "Off")
+        : (drawing ? "Running" : "On, idle") + (on ? " \u00b7 found by the meter" : drawing ? " \u00b7 not found yet" : "");
     } else {
-      state.textContent = on ? `On, ${a.kw[m].toFixed(2)} kW`
-        : a.locked ? "Always on, compressor resting" : "Off";
+      state.textContent = stateOf(a, m).text;
+      li.classList.toggle("is-idle", stateOf(a, m).cls === "idle");
       state.textContent += ` \u00b7 ${rs(p.cost[m + 1])} today`;
     }
     li.querySelector(".switch").setAttribute("aria-checked",
@@ -734,7 +787,8 @@ function updatePanel(m) {
     li.classList.toggle("is-on", on);
     li.querySelector(".switch").setAttribute("aria-checked", String(on));
     li.querySelector(".state").textContent = on
-      ? `On, ${(f.kw * 1000).toFixed(0)} W \u00b7 ${rs(S.devCost[f.key] || 0)} this session` : "Off";
+      ? `Running, ${(f.kw * 1000).toFixed(0)} W \u00b7 ${rs(S.devCost[f.key] || 0)} this session`
+      : (f.specs && f.specs.standby_w ? `Off, standby ${f.specs.standby_w} W` : "Off");
   }
   $("score").textContent = S.mode === "test"
     ? (running ? `Found ${found} of ${running} drawing power` : "Nothing switched on") : "state and cost today";
@@ -747,16 +801,20 @@ function updatePanel(m) {
     const f = devByKey(S.selected), on = !!S.fans[f.key];
     $("detail").innerHTML = `<h3>${f.name}</h3><div class="kind">${f.description}</div>
       <p>${on ? `On now, drawing ${(f.kw * 1000).toFixed(0)} W.` : "Off now."} This session: ${(S.devKwh[f.key] || 0).toFixed(3)} units, ${rs(S.devCost[f.key] || 0)}.</p>
-      <p class="never">Left on for 8 hours a day it would use about ${(f.kw * 8 * 30).toFixed(1)} units a month, about ${rs(f.kw * 8 * 30 * d.rates[m])}. Its load is added to the meter reading while it is on.</p>`;
+      <p class="never">Left on for 8 hours a day it would use about ${(f.kw * 8 * 30).toFixed(1)} units a month, about ${rs(f.kw * 8 * 30 * d.rates[m])}. Its load is added to the meter reading while it is on.</p>
+      ${f.specs ? `<details class="specs"><summary>Specification</summary>${specTable(f.specs)}</details>` : ""}`;
   } else {
   const p = S.prefix[a.key];
-  let html = `<h3>${a.name}</h3><div class="kind">${a.product}. ${a.category_label}. ${a.note}</div>
+  const st = stateOf(a, m);
+  let html = `<h3>${a.name}</h3><div class="kind">${a.specs ? a.specs.label + ". " : ""}${a.category_label}. ${a.note}</div>
+    <p><b class="st-${st.cls}">${st.text}</b>${st.why ? ` ${st.why}` : ""}</p>
     <p>Today so far: ${dur(p.on[m + 1])} drawing power, ${p.kwh[m + 1].toFixed(2)} units, ${rs(p.cost[m + 1])}.</p>`;
   if (a.tips.length) {
     html += a.tips.map((t) => `<div class="tip"><b>${t.title}</b><span>${t.detail} <em>Saves about Rs. ${t.saving} a month.</em></span></div>`).join("");
   } else {
     html += `<p class="never">${a.no_tip}</p>`;
   }
+  if (a.specs) html += `<details class="specs"><summary>Specification</summary>${specTable(a.specs)}</details>`;
   $("detail").innerHTML = html;
   }
 

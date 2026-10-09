@@ -100,6 +100,23 @@ def _pad(values, n=MINUTES) -> list:
     return [round(float(v), 3) for v in arr]
 
 
+def _switched_on(on, gap: int, always: bool) -> list:
+    """
+    Minutes the appliance is switched ON, whether or not it is drawing power:
+    short rests inside a run (a thermostat cutting the compressor, a washing
+    machine soaking) count as on.  An always-on appliance is on all day.
+    """
+    on = np.asarray(on, dtype=bool)
+    if always:
+        return [1] * len(on)
+    out = on.copy()
+    idx = np.flatnonzero(on)
+    for a, g in zip(idx[:-1], np.diff(idx)):
+        if 1 < g <= gap + 1:
+            out[a:a + g] = True
+    return [int(v) for v in out]
+
+
 def _payload(day: pd.DataFrame, truth, tips: dict, alerts: list, tariff: Tariff,
              mode: str, source: dict, start_minute: int, switches: dict, version: str,
              owned=tuple(APPLIANCE_KEYS)) -> dict:
@@ -113,6 +130,8 @@ def _payload(day: pd.DataFrame, truth, tips: dict, alerts: list, tariff: Tariff,
             "product": prof.product, "rated_kw": prof.rated_kw,
             "kw": _pad(day[f"{key}_kw"]),
             "on": [int(v) for v in _pad(day[f"{key}_on"].astype(int))],
+            "run": _switched_on(_pad(day[f"{key}_on"].astype(int)), max(prof.merge_gap_min, 12),
+                                prof.category == ALWAYS_ON),
             "truth": None if truth is None else
                      [int(v) for v in _pad((truth[key] > prof.on_threshold_kw).astype(int))],
             "tips": tips.get(key, []),
@@ -260,13 +279,17 @@ def render_home_tab(tariff_rate: float, home_details=None, db=None, household_id
     # The console shows its own "Updating the meter signal..." note.
     payload = dict(build_payload(state["mode"], state["switches"], tariff_rate, tod, scenario, owned))
     activity = _recent_activity(db, household_id) if db else []
+    from devices import appliance_specs
+    spec_of = appliance_specs(home_details)
+    payload["appliances"] = [{**a, "specs": spec_of.get(a["key"])} for a in payload["appliances"]]
     payload.update({
+        "home_type": (home_details or {}).get("home_type", "Apartment"),
         "theme": theme, "fans": switched, "fan_state": state["fans"],
         "members": [p["name"] for p in people], "activity": activity, "ack": state.get("nonce"),
         "household_size": len(people),
     })
     payload["version"] = hashlib.md5(
-        f"{payload['version']}|{theme}|{sorted(state['fans'].items())}|{activity[:1]}|{len(people)}|{state.get('nonce')}|{[f['key'] for f in switched]}".encode()
+        f"{payload['version']}|{theme}|{sorted(state['fans'].items())}|{activity[:1]}|{len(people)}|{state.get('nonce')}|{(home_details or {}).get('home_type')}|{sorted(spec_of)}|{[f['key'] for f in switched]}".encode()
     ).hexdigest()
 
     value = _component(data=payload, key="energy_home", default=None, height=1000)

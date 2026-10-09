@@ -293,13 +293,22 @@ def render_upgrades(ctx) -> None:
         if not candidates:
             st.info("None of the appliances you listed has a replacement estimate.")
         overrides = {}
+        from catalog import efficient_saving
         for key in candidates:
             spec = tk.REPLACEMENTS[key]
-            with st.expander(f"{DEFAULT_PROFILES[key].name}: {spec['what']}"):
+            mine = (ctx.get("specs") or {}).get(key)
+            default = spec["saving"]
+            heading = f"{DEFAULT_PROFILES[key].name}: {spec['what']}"
+            if mine and mine.get("star"):
+                default = efficient_saving(mine)
+                heading = f"{DEFAULT_PROFILES[key].name}: your {mine['label']} against a 5-star model"
+            with st.expander(heading):
+                if mine and mine.get("star") == 5:
+                    st.caption("Yours is already 5-star, so replacing it would save nothing on energy.")
                 c1, c2 = st.columns(2)
                 overrides[key] = {
                     "price": c1.number_input("Price (Rs)", 1000, 300000, int(spec["price"]), 500, key=f"tk_price_{key}"),
-                    "saving": c2.slider("Energy saved (%)", 5, 60, int(spec["saving"] * 100), key=f"tk_save_{key}") / 100.0}
+                    "saving": c2.slider("Energy saved (%)", 0, 60, int(round(default * 100)), key=f"tk_save_{key}_{int(default*100)}") / 100.0}
         rows = tk.replacement_table(b["month_kwh"], rate, overrides)
         if rows:
             _rows([(r["name"], f"uses {r['now_kwh']:.0f} units a month now; {r['what']} saves about {r['saving_pct']:.0f}%",

@@ -39,6 +39,9 @@ PERIOD_COLORS = {"Normal": "#6F7994", "Solar hours": "#5FCB8F", "Evening peak": 
 _model = get_model          # kept for older imports
 
 
+ACCENT_HEX = "#F5A83C"
+
+
 def _name(key: str) -> str:
     return "Other (lights, fans, TV...)" if key == "other" else DEFAULT_PROFILES[key].name
 
@@ -321,6 +324,25 @@ def render_analysis_tab(tariff_rate: float, owned, section, layout_fn):
 
 
 # ------------------------------------------------------------------ Save Energy
+
+    # When each appliance usually runs: the household's habits, hour by hour.
+    from daily_brief import usage_pattern
+    scenario_, _ = meter_settings()
+    pattern = usage_pattern(detected_history(today_str(), scenario_, tuple(owned)), owned)
+    if not pattern.empty:
+        section("When each appliance usually runs")
+        fig = go.Figure(go.Heatmap(
+            z=(pattern.values * 100).round(0), x=[f"{h:02d}:00" for h in range(24)], y=list(pattern.index),
+            colorscale=[[0, tc("slate")], [0.15, "#4a3a1f"], [1, ACCENT_HEX]], zmin=0, zmax=100,
+            hovertemplate="%{y} at %{x}: running %{z:.0f}% of the time<extra></extra>",
+            colorbar=dict(title=dict(text="% of time", side="right"), thickness=10)))
+        fig.update_layout(**layout_fn(height=60 + 34 * len(pattern), margin=dict(l=10, r=10, t=10, b=30),
+                                      xaxis=dict(dtick=3)))
+        st.plotly_chart(fig, width="stretch", key="analysis_pattern")
+        st.caption("Share of each hour the appliance was drawing power over the last 30 days. "
+                   "Tomorrow's forecast and plan on the Overview page are built from these habits.")
+
+
 def render_save_tab(tariff_rate: float, owned, section, layout_fn):
     st.caption(SOURCE_NOTE)
     min_saving = st.number_input("Hide tips saving less than (Rs./month)", 0, 500, 30, 10,

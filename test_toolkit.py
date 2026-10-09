@@ -242,9 +242,13 @@ def test_appliances_left_on_for_hours_are_still_detected():
     from disaggregate import MODEL_PATH, Disaggregator, evaluate
     from meter_sim import simulate_from_switches
     model = Disaggregator.load(MODEL_PATH)
-    day = simulate_from_switches({"geyser": [(100, 500)], "microwave": [(700, 725)], "ac": [(300, 1300)]}, seed=77)
+    day = simulate_from_switches({"geyser": [(100, 500)], "microwave": [(700, 706)], "ac": [(300, 1300)],
+                                  "water_pump": [(1350, 1380)]}, seed=77)
     scores = evaluate(model.predict(day[["datetime", "mains_kw"]]), day)
-    assert scores["geyser"]["recall"] > 0.8 and scores["ac"]["recall"] > 0.9 and scores["microwave"]["recall"] > 0.7
+    assert scores["geyser"]["recall"] > 0.8 and scores["ac"]["recall"] > 0.9
+    assert scores["microwave"]["recall"] >= 0.5 and scores["water_pump"]["recall"] > 0.8   # a short run is found within a minute or two
+    # Known limit: a water pump running at the same time as the AC is often missed
+    # (similar power steps); see models/nilm_metrics.json, stacked_days.
 
 
 def test_chat_answers_come_from_the_meter(home):
@@ -268,3 +272,79 @@ def test_chat_answers_come_from_the_meter(home):
     for text in [top, ask("why did my use go up?"), ask("how can I save money?")]:
         assert text.endswith("_From your simulated meter._")
     assert ask("Tell me a joke") is None
+
+
+def test_catalogue_specifications_are_consistent():
+    import catalog
+    assert len(catalog.CATALOG) >= 25 and len(catalog.CATEGORIES) >= 5
+    for t in catalog.CATALOG:
+        assert t.models, t.key
+        for m in t.models:
+            s = catalog.specs(m.id)
+            assert 0 < s["running_w"] <= s["rated_w"], m.id
+            assert abs(s["current_a"] - s["rated_w"] / (230 * s["power_factor"])) < 0.01
+            assert 0.5 <= s["power_factor"] <= 1.0 and s["voltage_v"] == 230 and s["yearly_kwh"] >= 0
+            assert dict(catalog.spec_lines(s))["Rated current"].endswith(" A")
+    ac = catalog.specs("ac_15t_inv_5s")
+    assert ac["current_a"] == round(1650 / (230 * 0.97), 2) and ac["detector"] == "ac" and ac["star"] == 5
+    assert catalog.efficient_saving(ac) == 0 and catalog.efficient_saving(catalog.specs("ac_15t_split_3s")) > 0.1
+    assert catalog.specs("nope") is None
+
+
+def test_picked_appliances_carry_their_model_everywhere():
+    import catalog
+    from devices import appliance_specs, household_devices, household_ratings
+    from meter_source import scenario_ratings, with_habits
+    home = {"home_type": "Apartment", "appliances": [
+        catalog.item_for("ac", "ac_2t_inv_3s"), catalog.item_for("fridge", "fridge_ff_340"),
+        catalog.item_for("fan", "fan_bldc"), catalog.item_for("tv", "tv_32"), catalog.item_for("lights")]}
+    owned, switched, _ = household_devices(home)
+    assert owned == ("fridge", "ac")
+    assert {d["kind"] for d in switched} == {"fan", "tv", "light"}
+    fan = next(d for d in switched if d["kind"] == "fan")
+    assert fan["kw"] == 0.028 and fan["specs"]["label"].startswith("1200 mm, BLDC")
+    assert appliance_specs(home)["ac"]["model_id"] == "ac_2t_inv_3s"
+    assert household_ratings(home) == {"ac": 1.8, "fridge": 0.15}
+    assert scenario_ratings(with_habits("Typical summer home", home)) == {"ac": 1.8, "fridge": 0.15}
+    # a bigger AC model makes the simulated home use more
+    small = simulate_home(days=5, seed=4, ratings={**{k: 1.0 for k in APPLIANCE_KEYS}, "ac": 1.0})
+    big = simulate_home(days=5, seed=4, ratings={**{k: 1.0 for k in APPLIANCE_KEYS}, "ac": 1.8})
+    assert big["ac"].sum() > small["ac"].sum() * 1.5
+
+
+def test_every_home_type_gets_a_working_home():
+    from meter_source import TYPE_AREA, scenario_place, with_habits
+    from devices import household_devices
+    import catalog
+    items = [catalog.item_for("ac"), catalog.item_for("fridge"), catalog.item_for("tv")]
+    sizes = {}
+    for kind in ["Apartment", "Independent House", "Villa", "Studio", "Other"]:
+        home = {"home_type": kind, "appliances": items}
+        owned, switched, _ = household_devices(home)
+        assert owned == ("fridge", "ac") and len(switched) == 1
+        sizes[kind] = scenario_place(with_habits("Typical summer home", home))[1]
+    assert sizes["Studio"] < sizes["Apartment"] < sizes["Independent House"] < sizes["Villa"]
+    assert sizes["Other"] == 1000.0 and TYPE_AREA["Villa"] == sizes["Villa"]
+    # a size the user typed wins over the type's typical one
+    assert scenario_place(with_habits("Typical summer home", {"home_type": "Villa", "home_size": 900}))[1] == 900.0
+
+
+def test_tomorrow_and_usage_pattern(home):
+    from daily_brief import build_brief, tomorrow_outlook, usage_pattern
+    pred, tariff = home[0], home[1]
+    brief = build_brief(pred, APPLIANCE_KEYS, tariff)
+    t = tomorrow_outlook(pred, APPLIANCE_KEYS, tariff, brief)
+    last = pd.to_datetime(pred["datetime"]).dt.normalize().iloc[-1]
+    assert t["date"] == str((last + pd.Timedelta(days=1)).date()) and t["total_kwh"] > 0 and t["plan"]
+    assert abs(sum(a["kwh"] for a in t["appliances"]) - t["total_kwh"]) < t["total_kwh"]   # appliances are part of it
+    pattern = usage_pattern(pred, APPLIANCE_KEYS)
+    assert pattern.shape == (6, 24) and ((pattern >= 0) & (pattern <= 1)).all().all()
+    assert pattern.loc["Refrigerator"].mean() > 0.2                    # the compressor runs at every hour
+    assert pattern.loc["Water Heater (Geyser)"].idxmax() in range(5, 9)  # baths are in the morning
+
+
+def test_running_or_idle_minutes():
+    from home_ui import _switched_on
+    on = [0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1]
+    assert _switched_on(on, 3, False) == [0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1]   # a short rest is still "on"
+    assert _switched_on(on, 3, True) == [1] * len(on)                                  # always-on appliances

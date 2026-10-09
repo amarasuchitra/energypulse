@@ -112,13 +112,13 @@ class Disaggregator:
         for k in self.appliances:
             y_on = states[k].to_numpy()
             clf = HistGradientBoostingClassifier(
-                max_iter=340, learning_rate=0.1, max_leaf_nodes=47,
+                max_iter=420, learning_rate=0.1, max_leaf_nodes=47,
                 class_weight="balanced", random_state=self.seed)
             clf.fit(X, y_on)
             self.classifiers[k] = clf
             # Power is learned only from minutes when the appliance was on.
             reg = HistGradientBoostingRegressor(
-                max_iter=340, learning_rate=0.1, max_leaf_nodes=47,
+                max_iter=420, learning_rate=0.1, max_leaf_nodes=47,
                 random_state=self.seed)
             if y_on.sum() > 50:
                 reg.fit(X[y_on], df[k].to_numpy()[y_on])
@@ -307,7 +307,7 @@ def load_labelled_csv(path: str, datetime_col: str, mains_col: str,
 # --------------------------------------------------------------------------
 # Train + evaluate on simulated homes
 # --------------------------------------------------------------------------
-def train_default(train_homes: int = 16, test_homes: int = 6, days: int = 10,
+def train_default(train_homes: int = 26, test_homes: int = 6, days: int = 10,
                   save: bool = True, verbose: bool = True):
     from meter_sim import (simulate_home, simulate_left_on_day, simulate_many, simulate_random_day,
                            simulate_stacked_day)

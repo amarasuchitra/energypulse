@@ -14,6 +14,15 @@ dataset (34,168 hourly rows, December 2006 – November 2010) and a trained
 > meter feed. To use your own readings, upload a CSV — see
 > [Using your own data](#using-your-own-data).
 
+## Appliance catalogue, specifications and home types (V4.1)
+
+- **Pick appliances from a list** (`catalog.py`): 26 appliance types in six categories, with 44 model classes. Each model class carries rated and running power, standby power, 230 V supply, rated and running current, power factor, BEE star rating and energy per year. The figures are typical for the class; the app reminds the user that their own rating plate gives exact values.
+- **The chosen model drives everything.** Its running power sets the simulated appliance's size, its specification appears on hover and in the device panel of the 3D home, and its star rating sets the saving a 5-star replacement would bring on the Upgrades page.
+- **Running or idle.** Each appliance shows Running (drawing power), On, idle (switched on but resting: a thermostat has cut the compressor, a washer is soaking) or Off; devices show their standby power when off.
+- **Home types.** Apartment, Independent House, Villa, Studio and Other all work. The type sets a typical floor area when none is given and changes the 3D surroundings (plot, boundary wall and water tank for a house; a pool for a villa; a sleeping area for a studio).
+- **Tomorrow and habits.** The Overview shows tomorrow's expected units and cost, the forecast temperature and a plan built from the household's usual times; the Analysis page shows when each appliance usually runs, hour by hour.
+- **Detection** now covers the full range of model sizes in the catalogue. On-off F1 on unseen simulated homes: fridge 0.98, ac 0.99, geyser 0.98, washing machine 0.90, water pump 0.94, microwave 0.92. With several switched on together: fridge 0.96, ac 0.97, geyser 0.97, washing machine 0.84, water pump 0.85, microwave 0.57. Known limit: a water pump running at the same time as the AC is often missed.
+
 ## Weather, household habits and left-on appliances (V4)
 
 - **Weather.** `weather.py` simulates the daily high temperature for the household's city (seasonal curve plus warm and cool spells; the same city and date always give the same value). The simulator runs the air conditioner longer on hotter days and not at all on cool ones. The daily forecast fits AC use to the degrees above 24 C today and yesterday. Measured on the last 14 days of several simulated homes, the forecast error fell from 18-27% to 12-18%.

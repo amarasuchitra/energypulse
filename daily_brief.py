@@ -196,6 +196,54 @@ def build_brief(pred: pd.DataFrame, owned, tariff: Optional[Tariff] = None,
     }
 
 
+def tomorrow_outlook(pred: pd.DataFrame, owned, tariff: Tariff, brief: dict,
+                     temps: Optional[pd.Series] = None, temp_tomorrow: Optional[float] = None) -> dict:
+    """
+    The next day: expected units and cost by appliance (same rule as today's
+    forecast, aimed at tomorrow's weekday and forecast temperature), and a plan
+    built from the household's own habits and the changes worth making.
+    """
+    owned = [k for k in owned if f"{k}_kw" in pred.columns]
+    kwh, cost = _daily(pred, owned, tariff)
+    past_kwh, past_cost = kwh.iloc[:-1], cost.iloc[:-1]
+    day = pd.Timestamp(kwh.index[-1]) + pd.Timedelta(days=1)
+    if temps is not None:
+        temps = temps.copy()
+        temps.index = pd.to_datetime(temps.index).normalize()
+    use_temp = temps is not None and temp_tomorrow is not None
+    f_kwh = _forecast_row(past_kwh, day, temps if use_temp else None, temp_tomorrow)
+    price = (past_cost.sum() / past_kwh.sum().replace(0, np.nan)).fillna(float(tariff.rate))
+    f_cost = f_kwh * price
+    f_cost["total"] = float(f_cost.drop("total").sum())
+    history = pred.iloc[: len(pred) - 1440]
+    sessions = extract_sessions(history, tariff)
+    plan = []
+    for action in brief.get("actions", []):
+        plan.append(f"{action['title']} (about Rs. {action['saving_day']:.1f} saved tomorrow).")
+    for key in owned:
+        usual = _usual_run(sessions, key)
+        if usual and not any(a["appliance"] == key for a in brief.get("actions", [])):
+            plan.append(f"{DEFAULT_PROFILES[key].name}: {usual}, about {float(f_kwh[key]):.2f} units.")
+    if use_temp and "ac" in owned:
+        plan.insert(0, f"A high of {temp_tomorrow:.0f} C is forecast, so expect about {float(f_kwh['ac']):.1f} units "
+                       f"of air conditioning (Rs. {float(f_cost['ac']):.0f}).")
+    return {"date": str(day.date()), "date_label": f"{day.strftime('%a')} {day.day} {day.strftime('%b')}",
+            "total_kwh": round(float(f_kwh["total"]), 1), "total_cost": round(float(f_cost["total"]), 0),
+            "temp": None if not use_temp else float(temp_tomorrow),
+            "appliances": [{"key": k, "name": DEFAULT_PROFILES[k].name, "kwh": round(float(f_kwh[k]), 2),
+                            "cost": round(float(f_cost[k]), 1)} for k in sorted(owned, key=lambda k: -float(f_kwh[k]))],
+            "plan": plan[:6]}
+
+
+def usage_pattern(pred: pd.DataFrame, owned, days: int = 30) -> pd.DataFrame:
+    """Share of each clock hour each appliance was drawing power, over the last `days` complete days."""
+    part = pred.iloc[: len(pred) - 1440].tail(days * 1440)
+    hour = pd.to_datetime(part["datetime"]).dt.hour
+    rows = {DEFAULT_PROFILES[k].name: part[f"{k}_on"].astype(float).groupby(hour).mean().reindex(range(24), fill_value=0)
+            for k in owned if f"{k}_on" in part.columns}
+    return pd.DataFrame(rows).T
+
+
 def right_now(pred: pd.DataFrame, owned, tariff: Tariff, minute: int) -> dict:
     """
     The meter at `minute` of today (the last calendar day of `pred`): load now,

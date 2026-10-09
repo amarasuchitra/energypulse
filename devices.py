@@ -17,7 +17,7 @@ nothing that was not listed is added.  An empty list gives an empty home.
 """
 
 import re
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from appliance_profiles import APPLIANCE_KEYS, DEFAULT_PROFILES
 
@@ -95,6 +95,32 @@ def _item_name(item) -> Tuple[str, str]:
     return str(item).strip(), "Other"
 
 
+def _item_spec(item) -> Optional[dict]:
+    """The catalogue specification of a picked appliance (None for typed-in items)."""
+    from catalog import specs
+    return specs(item.get("model_id", "")) if isinstance(item, dict) else None
+
+
+_CATEGORY_ROOM = {"Cooling": "living", "Kitchen": "kitchen", "Laundry": "utility", "Water and heating": "bathroom",
+                  "Entertainment and computing": "living", "Lighting": "any"}
+
+
+def appliance_specs(home_details: Optional[dict]) -> Dict[str, dict]:
+    """Specification of the first unit of each meter-detected appliance, by detector key."""
+    out = {}
+    for item in (home_details or {}).get("appliances", []) or []:
+        spec = _item_spec(item)
+        key = (spec or {}).get("detector") or (None if spec else detected_key(_item_name(item)[0]))
+        if spec and key and key not in out:
+            out[key] = spec
+    return out
+
+
+def household_ratings(home_details: Optional[dict]) -> Dict[str, float]:
+    """Running power in kW of each picked meter-detected appliance, for the simulated home."""
+    return {k: round(v["running_w"] / 1000.0, 3) for k, v in appliance_specs(home_details).items()}
+
+
 def detected_key(name: str) -> Optional[str]:
     low = name.lower()
     for pattern, key in _DETECTED_WORDS:
@@ -144,13 +170,16 @@ def household_devices(home_details: Optional[dict]):
     items = []
     for item in raw:
         name, kind_type = _item_name(item)
-        if name:
-            items.extend(_expand(name, kind_type))
+        spec = _item_spec(item)
+        if spec:
+            items.append((name, kind_type, spec))
+        elif name:
+            items.extend((n, k, None) for n, k in _expand(name, kind_type))
 
     found, switched, notes = [], [], []
     placer, counts = _Placer(), {}
-    for name, kind_type in items:
-        key = detected_key(name)
+    for name, kind_type, spec in items:
+        key = spec["detector"] if spec else detected_key(name)
         if key and key not in found:
             found.append(key)
             continue
@@ -161,10 +190,16 @@ def household_devices(home_details: Optional[dict]):
             # home, so the extra one is still shown, from its switch.
             prof = DEFAULT_PROFILES[key]
             kind, kw, product, prefer = "generic", prof.rated_kw, prof.product, _EXTRA_ROOM.get(key, "any")
+            if spec:
+                kw, product = spec["running_w"] / 1000.0, f"{spec['type_name']}, {spec['label']}"
             name = f"{name} {sum(1 for d in switched if d.get('extra_of') == key) + 2}"
             low = name.lower()
             notes.append(f"{name}: the meter model follows one {prof.name.lower()} per home, "
                          f"so this extra one is shown from its switch.")
+        elif spec:
+            kind, kw = spec["kind"], spec["running_w"] / 1000.0
+            product = f"{spec['type_name']}, {spec['label']}"
+            prefer = "any" if spec["kind"] in ("fan", "light") else _CATEGORY_ROOM.get(spec["category"], "any")
         elif match:
             kind, kw, product, prefer = match
         else:
@@ -183,10 +218,11 @@ def household_devices(home_details: Optional[dict]):
         label = name if room is None or _ROOM_NAMES[room].lower() in low or kind == "tv" and room == "living" \
             else f"{name} ({_ROOM_NAMES[room].lower()})"
         switched.append({
+            "specs": spec,
             "extra_of": key,
             "key": dev_key, "name": label[:48], "product": product, "kw": round(float(kw), 3),
             "kind": kind, "pos": [float(pos[0]), float(pos[1])], "room": _ROOM_NAMES[room],
-            "description": f"{product}, about {_watts(kw)}. In the {_ROOM_NAMES[room].lower()}. {NOT_DETECTED}",
+            "description": f"{product}, about {_watts(kw)} while running. In the {_ROOM_NAMES[room].lower()}. {NOT_DETECTED}",
         })
     owned = tuple(k for k in APPLIANCE_KEYS if k in found)
     if switched and not owned:
