@@ -31,29 +31,25 @@ jobs:
           pip install --upgrade pip
           pip install --timeout 300 --retries 3 -r requirements.txt
       
-      - name: Verify pytest-timeout installation
-        run: |
-          python -c "import pytest_timeout; print('pytest-timeout OK')" || pip install pytest-timeout>=2.1
-      
       - name: Run prediction pipeline tests
         run: |
-          python -m pytest test_prediction_pipeline.py -v --timeout=60
+          python -m pytest test_prediction_pipeline.py -v
       
       - name: Run new features tests
         run: |
-          python -m pytest test_new_features.py -v --tb=short --timeout=60
+          python -m pytest test_new_features.py -v --tb=short
       
       - name: Run CSV import tests
         run: |
-          python -m pytest test_csv_import.py -v --tb=short --timeout=60
+          python -m pytest test_csv_import.py -v --tb=short
       
       - name: Run toolkit tests
         run: |
-          python -m pytest test_toolkit.py -v --tb=short --timeout=60
+          python -m pytest test_toolkit.py -v --tb=short
       
       - name: Run all other tests
         run: |
-          python -m pytest test_appliance_intelligence.py test_chatbot_routing.py test_notifications.py -v --tb=short --timeout=120
+          python -m pytest test_appliance_intelligence.py test_chatbot_routing.py test_notifications.py -v --tb=short
       
       - name: Check imports
         run: |
