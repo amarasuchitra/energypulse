@@ -13,6 +13,7 @@
    ```
 
    Add the SMTP settings from `.env.example` there too if you want email alerts.
+   `ENERGYPULSE_ALLOW_PRIVATE_API` should stay unset on a public host.
 5. Press **Deploy**. The first build takes several minutes (TensorFlow is large).
 
 `requirements.txt` lists the Python packages and `packages.txt` installs Tesseract for

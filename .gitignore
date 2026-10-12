@@ -45,6 +45,10 @@ energypulse.db
 !models/lstm_model.keras
 !models/lstm_scaler.pkl
 !models/model_meta.pkl
+# Calibrated 5%/50%/95% interval models (python train_quantiles.py)
+!models/quantile_model_5.pkl
+!models/quantile_model_50.pkl
+!models/quantile_model_95.pkl
 
 # Raw UCI dataset (~127 MB — exceeds GitHub's 100 MB per-file limit).
 # Regenerate anytime with: python data.py (auto-downloads).

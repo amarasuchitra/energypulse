@@ -14,6 +14,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 import copy
 import calendar as cal
 import io
+import html
 import json
 import pickle
 import re
@@ -25,6 +26,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 from replay import ReplaySimulator
 from appliances import get_appliance_breakdown
@@ -40,7 +42,7 @@ from data import (
 )
 from data_source import (
     MAX_UPLOAD_BYTES, POWER_UNITS, DataSource, normalize_uploaded,
-    source_from_sample, source_from_upload,
+    source_from_sample, source_from_upload, source_from_api, fetch_meter_api,
 )
 from i18n import T, TLIST, LANGS, HOME_TYPES, home_type_label, localized_appliance_category, localized_appliance_label, localized_appliance_type, format_localized_month, format_localized_date
 from db import get_db
@@ -50,13 +52,15 @@ from appliance_ui import (
 )
 from meter_source import owned_appliances, SOURCE_NOTE, detected_history, today_str
 from appliance_ui import meter_settings
-from auth import Accounts, PASSWORD_RULES, new_guest_email, is_guest_email, session_expired
+from auth import (Accounts, PASSWORD_RULES, new_guest_email, is_guest_email, session_expired,
+                  COOKIE_NAME, REMEMBER_SECONDS)
 from motion import notify, runtime as motion_runtime, skeleton
 from integrity import Ledger, store_bill_file, read_bill_file, bill_path, sign_report, verify_report
 from home_ui import render_home_tab, _members as household_people
 from daily_brief import build_brief, send_daily_brief
 from meter_source import last_days, now_minute
 from tariff import Tariff
+from ensemble import clean_setting, resolve_weights
 from notifications import get_notification_service
 from devices import household_devices
 from sessions import extract_sessions, flag_long_runs
@@ -559,15 +563,23 @@ def source_summary(source):
             body += " (" + T("src_recorded",
                              start=format_localized_date(original[0]),
                              end=format_localized_date(original[1])) + ")"
+    elif source.kind == "api":
+        body = T("src_api_body",
+                 host=html.escape(source.label),
+                 rows=f"{rows:,}",
+                 start=format_localized_date(df["datetime"].min()),
+                 end=format_localized_date(df["datetime"].max()),
+                 when=(source.report or {}).get("fetched_at", ""))
     else:
         body = T("src_upload_body",
-                 name=source.label,
+                 name=html.escape(source.label),
                  rows=f"{rows:,}",
                  start=format_localized_date(df["datetime"].min()),
                  end=format_localized_date(df["datetime"].max()))
     return {
         "kind": source.kind,
-        "title": T("src_sample_title") if source.is_sample else T("src_upload_title"),
+        "title": (T("src_sample_title") if source.is_sample
+                  else T("src_api_title") if source.kind == "api" else T("src_upload_title")),
         "body": body,
         "rows": rows,
         "caps": source.capabilities,
@@ -646,6 +658,45 @@ def handle_upload(uploaded, power_unit, signature=None):
         st.session_state.simulator.reset()
 
 
+def handle_api_fetch(url, token, power_unit):
+    """Fetch readings from a meter API and make them the active data source."""
+    frame, reason, host = fetch_meter_api(url, token=token or None)
+    if frame is None:
+        st.session_state.data_upload_error = T("src_api_fail", reason=reason)
+        return False
+    canonical, report = normalize_uploaded(frame, power_unit=power_unit)
+    if not report.get("ok") or canonical.empty:
+        st.session_state.data_upload_error = T("src_api_fail", reason=T("src_need_power"))
+        return False
+    report["fetched_at"] = local_now().strftime("%d %b %Y, %H:%M")
+    st.session_state.data_upload = {"df": canonical,
+                                    "source": source_from_api(canonical, host, report=report)}
+    st.session_state.data_upload_sig = ("api", url)
+    st.session_state.data_upload_error = None
+    # The token is kept for this browser session only, so "Refresh" can reuse it.
+    st.session_state.data_api = {"url": url, "token": token or ""}
+    if "simulator" in st.session_state:
+        st.session_state.simulator.reset()
+    return True
+
+
+def render_meter_api_panel(power_unit):
+    """Third data source: readings fetched from a smart-meter or utility API."""
+    active = st.session_state.get("data_api") or {}
+    with st.expander(T("src_api_connect"), expanded=bool(active)):
+        url = st.text_input(T("src_api_url"), value=active.get("url", ""),
+                            placeholder="https://meter.example.com/api/readings", key="data_api_url")
+        token = st.text_input(T("src_api_token"), value=active.get("token", ""),
+                              type="password", key="data_api_token")
+        st.caption(T("src_api_help"))
+        label = T("src_api_refresh") if active and active.get("url") == url else T("src_api_fetch")
+        if st.button(label, width="stretch", key="data_api_fetch", disabled=not url.strip()):
+            with st.spinner(T("src_api_fetch") + "..."):
+                ok = handle_api_fetch(url.strip(), token.strip(), power_unit)
+            if ok:
+                st.rerun()
+
+
 def render_data_source_panel():
     """Settings block: upload a CSV, or fall back to the clearly labelled sample."""
     uploaded = st.file_uploader(T("src_choose_file"), type=["csv", "txt", "tsv"],
@@ -668,12 +719,15 @@ def render_data_source_panel():
     if signature is not None and st.session_state.get("data_upload_sig") != signature:
         handle_upload(uploaded, power_unit, signature)
 
+    render_meter_api_panel(power_unit)
+
     if st.session_state.get("data_upload_error"):
         st.error(st.session_state.data_upload_error)
     elif st.session_state.get("data_upload") is not None:
         if st.button(T("src_use_sample"), width="stretch", key="sb_back_to_sample"):
             st.session_state.data_upload = None
             st.session_state.data_upload_sig = None
+            st.session_state.pop("data_api", None)
             if "simulator" in st.session_state:
                 st.session_state.simulator.reset()
             st.rerun()
@@ -772,14 +826,30 @@ def load_feature_cols():
 
 @st.cache_resource
 def load_quantile_models():
-    """Load quantile models for prediction intervals."""
+    """Load quantile models for prediction intervals (5%, 50%, 95%)."""
     quantile_models = {}
     for q in [5, 50, 95]:
         path = os.path.join(MODEL_DIR, f"quantile_model_{q}.pkl")
         if os.path.exists(path):
-            with open(path, "rb") as f:
-                quantile_models[q / 100] = pickle.load(f)
-    return quantile_models if quantile_models else None
+            try:
+                with open(path, "rb") as f:
+                    quantile_models[q / 100] = pickle.load(f)
+            except Exception as exc:          # a bad file must not stop the dashboard
+                print(f"Quantile model {q} not loaded: {exc}")
+    if 0.05 not in quantile_models or 0.95 not in quantile_models:
+        return None
+    return quantile_models
+
+
+@st.cache_resource
+def load_quantile_meta():
+    """Feature list, calibration offset and measured coverage of the quantile models."""
+    path = os.path.join(MODEL_DIR, "quantile_meta.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
 
 
 def add_engineered_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -928,10 +998,70 @@ def sign_out():
         except Exception:
             pass
         sim.stop()
+    auth_state = st.session_state.get("auth") or {}
+    # "Keep me signed in": revoke this browser's token and remove its cookie.
+    if auth_state.get("token"):
+        try:
+            get_accounts().revoke_token(auth_state["token"])
+        except Exception as exc:
+            print(f"Token revoke failed: {exc}")
+        st.session_state["_clear_cookie"] = True
+    st.session_state["_cookie_checked"] = True       # never sign straight back in after logging out
+    # A guest home is not kept: remove everything it stored.
+    if auth_state.get("guest") or is_guest_email(auth_state.get("email") or ""):
+        try:
+            guest_email = auth_state.get("email")
+            user = get_db().get_user(guest_email) if guest_email else None
+            if user:
+                get_db().delete_household(user["household_id"], guest_email)
+        except Exception as exc:
+            print(f"Guest cleanup failed: {exc}")
     for k in ["auth", "home_details", "simulator", "onboard_data", "onboard_step", "sidebar_settings",
-              "page", "bills", "bill_seen", "home_state", "nilm_dismissed", "data_upload",
-              "data_upload_sig", "data_upload_error"]:
+              "page", "bills", "bill_seen", "home_state", "nilm_dismissed", "data_upload", "ensemble_setting",
+              "data_upload_sig", "data_upload_error", "data_api"]:
         st.session_state.pop(k, None)
+
+
+def _write_session_cookie(value: str, max_age: int) -> None:
+    """Set (or, with max_age 0, remove) the sign-in cookie in the visitor's browser."""
+    components.html(
+        "<script>(function(){var w=window.parent;var secure=w.location.protocol==='https:'?'; Secure':'';"
+        f"w.document.cookie='{COOKIE_NAME}='+{json.dumps(value)}+'; Max-Age={int(max_age)}; Path=/; SameSite=Strict'+secure;"
+        "})();</script>", height=0)
+
+
+def flush_cookie_changes() -> None:
+    """Apply a cookie change requested before the last rerun."""
+    token = st.session_state.pop("_set_cookie", None)
+    if token:
+        _write_session_cookie(token, REMEMBER_SECONDS)
+    if st.session_state.pop("_clear_cookie", False):
+        _write_session_cookie("", 0)
+
+
+def restore_remembered_session(auth: dict) -> None:
+    """Sign straight in when this browser holds a valid "keep me signed in" token."""
+    if st.session_state.get("_cookie_checked"):
+        return
+    st.session_state["_cookie_checked"] = True
+    try:
+        token = st.context.cookies.get(COOKIE_NAME)
+    except Exception:
+        token = None
+    if not token:
+        return
+    found = get_accounts().check_token(token)
+    if not found:
+        _write_session_cookie("", 0)                 # expired or revoked: forget it
+        return
+    email, name, issued_at = found
+    auth.update({"logged_in": True, "email": email, "name": name, "guest": False,
+                 "signed_in_at": issued_at, "remember": True, "token": token})
+    household = ensure_login(email, name=name)
+    saved_home = get_db().get_home_details(household)
+    if saved_home:
+        st.session_state.home_details = saved_home
+    st.rerun()
 
 
 @st.dialog("Log out?")
@@ -955,10 +1085,12 @@ def render_login_screen():
         st.session_state.auth = {"logged_in": False, "email": None, "mode": "login"}
     auth = st.session_state.auth
     if auth.get("logged_in"):
-        if session_expired(auth.get("signed_in_at")):
+        if session_expired(auth.get("signed_in_at"), remember=bool(auth.get("remember"))):
             sign_out()
             st.rerun()
         return True
+
+    restore_remembered_session(auth)
 
     mode = auth.get("mode", "login")
     is_signup = (mode == "signup")
@@ -984,6 +1116,7 @@ def render_login_screen():
                     + "".join(f"<li>{label}</li>" for _, label in PASSWORD_RULES)
                     + "</ul></div>", unsafe_allow_html=True)
                 name = st.text_input(T("name_label"), placeholder=T("ph_name"), key="login_name")
+            remember = st.checkbox(T("remember_me"), value=True, key="login_remember")
             btn_label = T("btn_create_account") if is_signup else T("btn_sign_in")
             submitted = st.form_submit_button(btn_label, width="stretch", type="primary")
             if submitted:
@@ -1000,7 +1133,11 @@ def render_login_screen():
                         return False
                     email = accounts.normalise(email)
                     auth.update({"logged_in": True, "email": email, "name": result,
-                                 "guest": False, "signed_in_at": time.time()})
+                                 "guest": False, "signed_in_at": time.time(), "remember": False})
+                    if remember:
+                        token = accounts.issue_token(email)
+                        auth.update({"remember": True, "token": token})
+                        st.session_state["_set_cookie"] = token
                     household = ensure_login(email, name=result)
                     saved_home = None if is_signup else get_db().get_home_details(household)
                     if saved_home:
@@ -1581,18 +1718,8 @@ def _render_onboard_step3(od):
 @st.cache_data(show_spinner=False)
 def _brief_cached(date, scenario, owned, rate, tod):
     """Today's per-appliance forecast and savings plan (see daily_brief.py)."""
-    try:
-        from meter_source import scenario_place, temperatures
-        from weather import forecast_high
-        temps = temperatures(date, scenario)
-        city = scenario_place(scenario)[0]
-        seen = pd.Series({d: forecast_high(d, city) for d in temps.index})
-        brief = build_brief(detected_history(date, scenario, owned), owned, Tariff(rate=rate, tod_enabled=tod),
-                            temps=temps, forecast_temp=float(seen.iloc[-1]), temp_forecasts=seen)
-        brief["city"] = city.title()
-        return brief
-    except Exception:
-        return None
+    from daily_brief import make_brief
+    return make_brief(date, scenario, owned, rate, tod)
 
 
 def todays_brief(tariff_rate, owned, household_id, user_name, user_email):
@@ -1899,6 +2026,47 @@ def _render_appliances_editor(hd: dict, lang: str) -> None:
             st.rerun()
 
 
+def ensemble_setting() -> dict:
+    """The household's XGBoost/LSTM blend, remembered per household."""
+    if "ensemble_setting" not in st.session_state:
+        stored = None
+        try:
+            stored = get_db().get_store(current_household_id(), "ensemble_weights")
+        except Exception:
+            pass
+        st.session_state.ensemble_setting = clean_setting(stored)
+    return st.session_state.ensemble_setting
+
+
+def forecast_weights(meta) -> tuple:
+    return resolve_weights(ensemble_setting(), (meta or {}).get("hybrid_weights"))
+
+
+def render_ensemble_settings():
+    meta = load_meta() or {}
+    setting = dict(ensemble_setting())
+    modes = ["auto", "custom"]
+    mode = st.radio(T("ens_mode"), modes, index=modes.index(setting["mode"]),
+                    format_func=lambda m: T("ens_auto" if m == "auto" else "ens_custom"),
+                    key="ens_mode", horizontal=True)
+    if mode == "custom":
+        share = st.slider(T("ens_share"), 0, 100, int(round(setting["xgb_share"] * 100)), 5, key="ens_share")
+        new = {"mode": "custom", "xgb_share": share / 100}
+        st.caption(T("ens_custom_caption", x=share, l=100 - share))
+    else:
+        new = {"mode": "auto", "xgb_share": setting["xgb_share"]}
+        w_x, w_l = resolve_weights(new, meta.get("hybrid_weights"))
+        st.caption(T("ens_auto_caption", x=round(w_x * 100), l=round(w_l * 100),
+                     xm=f"{float(meta.get('xgb_mae', 0) or 0):.3f}",
+                     lm=f"{float(meta.get('lstm_mae', 0) or 0):.3f}"))
+    if new != setting:
+        st.session_state.ensemble_setting = clean_setting(new)
+        try:
+            get_db().set_store(current_household_id(), "ensemble_weights", st.session_state.ensemble_setting)
+        except Exception:
+            pass
+
+
 def render_settings_page():
     hd = st.session_state.home_details
     cur = st.session_state.sidebar_settings
@@ -1959,6 +2127,9 @@ def render_settings_page():
         with st.container(border=True):
             section("Meter demo")
             render_meter_settings()
+        with st.container(border=True):
+            section(T("ens_title"))
+            render_ensemble_settings()
         with st.container(border=True):
             section(T("sb_section_display"))
             display_count = st.slider(T("sb_trend_window"), 20, 500, int(cur["display_count"]), key="sb_display")
@@ -2546,12 +2717,12 @@ def _main_dashboard_inner():
         pred_kw, xgb_p, lstm_p, pred_info = predict_next_period_v2(
             live_row_v2, xgb_model, lstm_model, scaler, hist_df,
             feature_cols, quantile_models,
-            return_info=True, weights=meta.get("hybrid_weights"),
+            return_info=True, weights=forecast_weights(meta),
         )
     elif can_predict:
         pred_kw, xgb_p, lstm_p, pred_info = predict_next_period(
             live_row, xgb_model, lstm_model, scaler, replay_window_raw,
-            return_info=True, weights=meta.get("hybrid_weights"),
+            return_info=True, weights=forecast_weights(meta),
         )
     else:
         pred_kw, xgb_p, lstm_p = gap, None, None
@@ -2563,18 +2734,34 @@ def _main_dashboard_inner():
     if lstm_p is not None:
         lstm_p *= sf
     
-    # Use quantile models for prediction intervals if available
-    if quantile_models and use_v2 and feature_cols:
-        live_df = add_engineered_features(pd.DataFrame([live_row]))
-        X_live = live_df[feature_cols].iloc[[0]]
-        lower_q = quantile_models[0.05].predict(X_live)[0]
-        upper_q = quantile_models[0.95].predict(X_live)[0]
-        lower = max(0, lower_q * sf)
-        upper = max(0, upper_q * sf)
+    # 5%-95% prediction band from the calibrated quantile models, when present.
+    q_meta = load_quantile_meta()
+    q_cols = q_meta.get("feature_cols") or (feature_cols if use_v2 else None)
+    band = None
+    if quantile_models and can_predict and q_cols:
+        try:
+            if use_v2 and feature_cols and q_cols == feature_cols:
+                X_live = add_engineered_features(pd.DataFrame([live_row]))[q_cols].iloc[[0]]
+            else:
+                X_live = pd.DataFrame([{c: float(live_row.get(c, 0) or 0) for c in q_cols}],
+                                      columns=q_cols)
+            lo_q = float(quantile_models[0.05].predict(X_live)[0])
+            hi_q = float(quantile_models[0.95].predict(X_live)[0])
+            offset = float(q_meta.get("conformal_offset_kw", 0.0))
+            lo_q, hi_q = min(lo_q, hi_q) - offset, max(lo_q, hi_q) + offset
+            # Centre the band on the ensemble forecast actually shown.
+            centre_shift = pred_kw - float(quantile_models[0.5].predict(X_live)[0]) * sf \
+                if 0.5 in quantile_models else 0.0
+            band = (max(0.0, lo_q * sf + centre_shift), max(0.0, hi_q * sf + centre_shift))
+        except Exception as exc:
+            print(f"Prediction band unavailable: {exc}")
+            band = None
+    if band is not None:
+        lower, upper = band
         pred_info["pi_lower"] = lower
         pred_info["pi_upper"] = upper
-        pred_info["pi_coverage"] = meta.get("pi_coverage", 0.9)
-        uncertainty = (upper - lower) / 2.0  # approximate from quantile interval
+        pred_info["pi_coverage"] = q_meta.get("pi_coverage", 0.9)
+        uncertainty = (upper - lower) / 2.0
     else:
         uncertainty = hybrid_mae * sf
         lower = max(0, pred_kw - uncertainty)
@@ -2908,6 +3095,7 @@ def main():
     
     apply_theme()
     inject_skin()
+    flush_cookie_changes()
     if not render_login_screen():
         motion_runtime("sign-in")
         return

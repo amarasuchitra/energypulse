@@ -1,0 +1,28 @@
+{
+  "quantiles": [
+    0.05,
+    0.5,
+    0.95
+  ],
+  "feature_cols": [
+    "hour",
+    "day_of_week",
+    "is_weekend",
+    "Global_reactive_power",
+    "Voltage",
+    "Global_intensity",
+    "Sub_metering_1",
+    "Sub_metering_2",
+    "Sub_metering_3"
+  ],
+  "target": "Global_active_power",
+  "nominal_coverage": 0.9,
+  "conformal_offset_kw": 0.00728,
+  "pi_coverage": 0.9294,
+  "pi_coverage_uncalibrated": 0.8375,
+  "pi_mean_width_kw": 0.0736,
+  "median_mae_kw": 0.0128,
+  "split": "time-ordered: fit 70%, calibrate 15%, test last 15% of the sample data",
+  "sklearn_version": "1.9.1",
+  "model": "HistGradientBoostingRegressor(loss='quantile') + conformal calibration"
+}

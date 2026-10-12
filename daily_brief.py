@@ -329,6 +329,29 @@ def brief_text(brief: dict) -> Tuple[str, str]:
     return subject, "\n".join(lines)
 
 
+def make_brief(date: str, scenario: str, owned, rate: float, tod: bool = True) -> Optional[dict]:
+    """
+    Today's per-appliance forecast for one simulated home, with the weather
+    forecast for its city.  Used by the app and by the background scheduler,
+    so both report the same figures.  Returns None if it cannot be built.
+    """
+    try:
+        from meter_source import detected_history, scenario_place, temperatures
+        from tariff import Tariff
+        from weather import forecast_high
+        owned = tuple(owned)
+        temps = temperatures(date, scenario)
+        city = scenario_place(scenario)[0]
+        seen = pd.Series({d: forecast_high(d, city) for d in temps.index})
+        brief = build_brief(detected_history(date, scenario, owned), owned,
+                            Tariff(rate=float(rate), tod_enabled=bool(tod)),
+                            temps=temps, forecast_temp=float(seen.iloc[-1]), temp_forecasts=seen)
+        brief["city"] = city.title()
+        return brief
+    except Exception:
+        return None
+
+
 def already_sent(db, household_id: str, date: str) -> bool:
     import json
     for entry in db.get_notification_log(household_id, limit=300):

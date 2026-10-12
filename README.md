@@ -14,6 +14,16 @@ dataset (34,168 hourly rows, December 2006 – November 2010) and a trained
 > meter feed. To use your own readings, upload a CSV — see
 > [Using your own data](#using-your-own-data).
 
+## Sign-in, background jobs, meter API and forecast bands (V4.3)
+
+- **Keep me signed in for 30 days.** Ticking the box on the sign-in form stores a random token in a browser cookie (`ep_session`, `SameSite=Strict`, `Secure` on https). The server keeps only its SHA-256 hash, so a copied database cannot be used to sign in. Logging out revokes the token; without the box a sign-in lasts 8 hours (`auth.py`).
+- **Guests leave nothing behind.** Logging out of a guest session deletes the guest's home, readings, settings, bills and photos. Guests who just close the tab are removed by an hourly job after a day (`db.delete_household`, `db.purge_stale_guests`).
+- **Background jobs that work.** The daily brief (07:00), bill alerts (09:00), weekly summary (Monday 10:00) and guest clean-up run in the app's process with APScheduler. They work from the saved home setup, family members and replayed meter readings, so nobody needs to have the app open (`scheduler_jobs.py`). A free host that sleeps only runs them while awake.
+- **Meter API as a data source.** Besides the sample data and a CSV upload, Settings > Data can fetch readings from a smart-meter or utility API that returns JSON or CSV, with an optional bearer token kept only for the session. Addresses on private networks are refused unless `ENERGYPULSE_ALLOW_PRIVATE_API=1` is set, for example when the app runs at home next to a meter gateway (`data_source.fetch_meter_api`).
+- **90% forecast band.** The next-hour card shows a 5%-95% range from three quantile models (`models/quantile_model_{5,50,95}.pkl`), calibrated with conformal prediction. On the last 15% of the sample data, held out, the band covered 92.9% of hours (`models/quantile_meta.json`; retrain with `python train_quantiles.py`).
+- **Choose the model blend.** Settings > Forecast model: automatic weights (each model by 1 / its measured error) or a custom XGBoost share, remembered per household (`ensemble.py`).
+- **Translations repaired.** About 25 Hindi, Kannada and Telugu strings on the data-source and setup screens were garbled and have been rewritten.
+
 ## When the model is not known: estimate, rating plate, web look-up (V4.2)
 
 Every appliance can be described in one of three ways, on the setup screen or later on the **My appliances** page:

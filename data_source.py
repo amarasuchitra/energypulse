@@ -475,7 +475,7 @@ class DataSource:
         Canonical hourly frame.
     kind : str
         "sample" for the bundled UCI-derived demo data, "upload" for a user
-        CSV. Anything else is rejected.
+        CSV, "api" for readings fetched from a meter API. Anything else is rejected.
     filename : str
         Display name of the upload (empty for the sample).
     original_range : tuple or None
@@ -487,8 +487,8 @@ class DataSource:
 
     def __init__(self, df, kind, filename="", label="", original_range=None,
                  shifted=False, report=None):
-        if kind not in ("sample", "upload"):
-            raise ValueError("kind must be 'sample' or 'upload'")
+        if kind not in ("sample", "upload", "api"):
+            raise ValueError("kind must be 'sample', 'upload' or 'api'")
         self.df = add_time_features(df) if df is not None else pd.DataFrame()
         self.kind = kind
         self.filename = filename
@@ -530,3 +530,141 @@ def source_from_sample(df: pd.DataFrame, filename: str, original_range=None,
 def source_from_upload(df: pd.DataFrame, filename: str, report=None):
     return DataSource(df, "upload", filename=filename, shifted=False,
                       report=report or {})
+
+
+def source_from_api(df: pd.DataFrame, host: str, report=None):
+    return DataSource(df, "api", filename=host, label=host, shifted=False,
+                      report=report or {})
+
+
+# ---------------------------------------------------------------- meter API
+# Readings can also come from a smart-meter or utility API that returns JSON or
+# CSV over HTTPS.  The server fetches the URL, so addresses on private or
+# internal networks are refused unless ENERGYPULSE_ALLOW_PRIVATE_API=1 is set
+# (useful when the app runs at home next to a local meter gateway).
+API_TIMEOUT = 15
+_LIST_KEYS = ("readings", "data", "items", "results", "records", "values", "rows", "measurements")
+
+
+def _private_allowed() -> bool:
+    import os
+    return os.environ.get("ENERGYPULSE_ALLOW_PRIVATE_API", "").strip().lower() in ("1", "true", "yes")
+
+
+def check_api_url(url: str, allow_private=None):
+    """(host, None) when the URL may be fetched, otherwise (None, reason)."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+    allow_private = _private_allowed() if allow_private is None else allow_private
+    url = (url or "").strip()
+    parts = urlparse(url)
+    if parts.scheme not in ("https", "http") or not parts.hostname:
+        return None, "Enter a full http(s):// address."
+    if parts.username or parts.password:
+        return None, "Put the access token in the token box, not in the address."
+    if parts.scheme == "http" and not allow_private:
+        return None, "Use an https:// address."
+    host = parts.hostname
+    try:
+        infos = socket.getaddrinfo(host, parts.port or (443 if parts.scheme == "https" else 80))
+    except (socket.gaierror, UnicodeError):
+        return None, f"The address {host} could not be found."
+    if not allow_private:
+        for info in infos:
+            ip = ipaddress.ip_address(info[4][0].split("%")[0])
+            if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                    or ip.is_multicast or ip.is_unspecified):
+                return None, f"{host} is on a private network, which this server does not contact."
+    return host, None
+
+
+def _records_from_json(obj, depth=0):
+    """Find the list of readings inside a JSON reply."""
+    if isinstance(obj, list):
+        if obj and all(isinstance(r, dict) for r in obj):
+            return pd.json_normalize(obj)
+        if obj and all(isinstance(r, (list, tuple)) for r in obj):
+            return pd.DataFrame(obj)
+        return None
+    if isinstance(obj, dict) and depth < 3:
+        if isinstance(obj.get("columns"), list) and isinstance(obj.get("data"), list):
+            return pd.DataFrame(obj["data"], columns=obj["columns"])
+        keys = [k for k in _LIST_KEYS if k in obj] + [k for k in obj if k not in _LIST_KEYS]
+        for key in keys:
+            found = _records_from_json(obj[key], depth + 1)
+            if found is not None and not found.empty:
+                return found
+    return None
+
+
+def parse_api_payload(body: bytes, content_type: str = ""):
+    """(frame, None) or (None, reason) for a JSON or CSV reply."""
+    import io
+    import json
+    if not body:
+        return None, "The API returned nothing."
+    text_start = body.lstrip()[:1]
+    if "json" in (content_type or "").lower() or text_start in (b"[", b"{"):
+        try:
+            frame = _records_from_json(json.loads(body.decode("utf-8-sig")))
+        except (ValueError, UnicodeDecodeError):
+            return None, "The reply looked like JSON but could not be read."
+        if frame is None or frame.empty:
+            return None, "No list of readings was found in the JSON reply."
+        return frame, None
+    for kwargs in ({"sep": None, "engine": "python"}, {"sep": ","}, {"sep": ";"}):
+        try:
+            frame = pd.read_csv(io.BytesIO(body), **kwargs)
+        except Exception:
+            continue
+        if frame is not None and not frame.empty and frame.shape[1] > 1:
+            return frame, None
+    return None, "The reply was neither JSON readings nor a CSV table."
+
+
+def fetch_meter_api(url: str, token: str = None, timeout: float = API_TIMEOUT,
+                    max_bytes: int = MAX_UPLOAD_BYTES, allow_private=None, session=None):
+    """
+    Download readings from a meter API.
+    Returns (frame, None, host) on success or (None, reason, host).
+    """
+    import requests
+    host, reason = check_api_url(url, allow_private)
+    if reason:
+        return None, reason, host
+    headers = {"Accept": "application/json, text/csv;q=0.9, */*;q=0.5",
+               "User-Agent": "EnergyPulse/1.0"}
+    if token:
+        headers["Authorization"] = f"Bearer {token.strip()}"
+    getter = session or requests
+    try:
+        # Redirects are not followed: a redirect could lead to an address
+        # that the check above would have refused.
+        resp = getter.get(url.strip(), headers=headers, timeout=timeout,
+                          allow_redirects=False, stream=True)
+    except requests.exceptions.Timeout:
+        return None, f"No reply within {int(timeout)} seconds.", host
+    except requests.exceptions.RequestException as exc:
+        return None, f"Could not connect ({type(exc).__name__}).", host
+    try:
+        if 300 <= resp.status_code < 400:
+            return None, "The API answered with a redirect; use the final address.", host
+        if resp.status_code in (401, 403):
+            return None, "The API refused access. Check the token.", host
+        if resp.status_code >= 400:
+            return None, f"The API answered with error {resp.status_code}.", host
+        chunks, size = [], 0
+        for chunk in resp.iter_content(64 * 1024):
+            size += len(chunk)
+            if size > max_bytes:
+                return None, f"The reply is larger than {max_bytes // (1024 * 1024)} MB.", host
+            chunks.append(chunk)
+        body = b"".join(chunks)
+        frame, reason = parse_api_payload(body, resp.headers.get("Content-Type", ""))
+        return frame, reason, host
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass

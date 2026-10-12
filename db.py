@@ -175,6 +175,70 @@ class DatabaseManager:
 
             conn.commit()
 
+    # ────────────── REMOVING A HOUSEHOLD (guest sign-out, stale guests) ────────
+    def delete_household(self, household_id: str, email: Optional[str] = None,
+                         remove_files: bool = True) -> int:
+        """
+        Remove everything stored for one household: every table row keyed by
+        its household_id, its user and credential rows, and (by default) its
+        encrypted bill and appliance-photo files.  Returns rows deleted.
+        """
+        if not household_id:
+            return 0
+        deleted = 0
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if email is None:
+                row = cursor.execute("SELECT email FROM users WHERE household_id = ?",
+                                     (household_id,)).fetchone()
+                email = row["email"] if row else None
+            tables = [r["name"] for r in cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")]
+            for table in tables:
+                cols = {c["name"] for c in cursor.execute(f'PRAGMA table_info("{table}")')}
+                if "household_id" in cols:
+                    cursor.execute(f'DELETE FROM "{table}" WHERE household_id = ?', (household_id,))
+                    deleted += max(cursor.rowcount, 0)
+            for table in ("credentials", "login_tokens"):
+                if email and table in tables:
+                    cursor.execute(f'DELETE FROM "{table}" WHERE email = ?', (email,))
+                    deleted += max(cursor.rowcount, 0)
+        if remove_files:
+            self._delete_household_files(household_id)
+        return deleted
+
+    @staticmethod
+    def _delete_household_files(household_id: str) -> None:
+        import re
+        import shutil
+        dirs = []
+        try:
+            from integrity import BILL_DIR
+            if re.fullmatch(r"[A-Za-z0-9_.-]+", household_id) and household_id not in (".", ".."):
+                dirs.append(os.path.join(BILL_DIR, household_id))
+        except Exception:
+            pass
+        try:
+            from nameplate import PHOTO_DIR
+            safe = re.sub(r"[^A-Za-z0-9_-]", "", household_id)[:64]
+            if safe:
+                dirs.append(os.path.join(PHOTO_DIR, safe))
+        except Exception:
+            pass
+        for d in dirs:
+            if os.path.basename(d) and os.path.isdir(d):
+                shutil.rmtree(d, ignore_errors=True)
+
+    def purge_stale_guests(self, max_age_hours: float = 24) -> int:
+        """Remove guest households older than max_age_hours (guests who never logged out)."""
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT household_id, email FROM users WHERE is_guest = 1 "
+                "AND created_at < datetime('now', ?)", (f"-{float(max_age_hours)} hours",)).fetchall()
+        for r in rows:
+            self.delete_household(r["household_id"], r["email"])
+        return len(rows)
+
     # ────────────── SMALL PER-HOUSEHOLD SETTINGS (goal, schedules, outages...) ───
     def get_store(self, household_id: str, key: str, default=None):
         with self.get_connection() as conn:
@@ -254,6 +318,17 @@ class DatabaseManager:
             available_cols = [c for c in cols if c in df.columns]
             
             data_to_insert = df[available_cols].copy()
+            # The caller passes the whole replay so far; keep only readings newer
+            # than what is already stored, so nothing is saved twice.
+            cursor.execute("SELECT MAX(datetime) AS last FROM simulation_history WHERE household_id = ?",
+                           (household_id,))
+            last = cursor.fetchone()["last"]
+            data_to_insert["datetime"] = pd.to_datetime(data_to_insert["datetime"])
+            if last is not None:
+                data_to_insert = data_to_insert[data_to_insert["datetime"] > pd.to_datetime(last)]
+            if data_to_insert.empty:
+                return 0
+            data_to_insert["datetime"] = data_to_insert["datetime"].dt.strftime("%Y-%m-%d %H:%M:%S")
             data_to_insert["household_id"] = household_id
             
             # Build insert statement
@@ -675,7 +750,6 @@ class DatabaseManager:
 
     def mark_onboarding_completed(self, household_id: str) -> None:
         """Mark onboarding as completed for a household."""
-        from datetime import datetime
         self.update_household_settings(household_id, {
             "onboarding_completed": True,
             "onboarding_completed_at": datetime.now().isoformat(),

@@ -40,6 +40,11 @@ MIN_PASSWORD = 10
 MAX_FAILURES = 5
 LOCK_SECONDS = 300
 SESSION_SECONDS = 8 * 3600
+# "Keep me signed in": a random token in a browser cookie, stored here only as
+# a SHA-256 hash, valid for 30 days and revoked on log-out.
+REMEMBER_DAYS = 30
+REMEMBER_SECONDS = REMEMBER_DAYS * 24 * 3600
+COOKIE_NAME = "ep_session"
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 GUEST_DOMAIN = "guest.energypulse.local"
 
@@ -98,6 +103,13 @@ class Accounts:
                     failures INTEGER NOT NULL DEFAULT 0,
                     locked_until REAL NOT NULL DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )""")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS login_tokens (
+                    token_hash TEXT PRIMARY KEY,
+                    email TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    expires_at REAL NOT NULL
                 )""")
 
     @contextmanager
@@ -159,6 +171,49 @@ class Accounts:
             return False, "The email or password is not right."
 
 
+    # ------------------------------------------------------- remember-me tokens
+    @staticmethod
+    def _token_hash(token: str) -> str:
+        return hashlib.sha256(("login|" + (token or "")).encode()).hexdigest()
+
+    def issue_token(self, email: str, now: Optional[float] = None,
+                    seconds: int = REMEMBER_SECONDS) -> str:
+        """A new sign-in token for this account.  Only its hash is kept."""
+        email = self.normalise(email)
+        now = time.time() if now is None else now
+        token = secrets.token_urlsafe(32)
+        with self._conn() as conn:
+            conn.execute("DELETE FROM login_tokens WHERE expires_at < ?", (now,))
+            conn.execute("INSERT INTO login_tokens (token_hash, email, created_at, expires_at) "
+                         "VALUES (?, ?, ?, ?)", (self._token_hash(token), email, now, now + seconds))
+        return token
+
+    def check_token(self, token: str, now: Optional[float] = None) -> Optional[Tuple[str, str, float]]:
+        """(email, display name, issued at) for a valid, unexpired token; otherwise None."""
+        if not token or len(token) > 200:
+            return None
+        now = time.time() if now is None else now
+        with self._conn() as conn:
+            row = conn.execute("""
+                SELECT t.email, t.created_at, t.expires_at, c.name
+                FROM login_tokens t JOIN credentials c ON c.email = t.email
+                WHERE t.token_hash = ?""", (self._token_hash(token),)).fetchone()
+        if row is None or row["expires_at"] < now:
+            return None
+        return row["email"], row["name"], float(row["created_at"])
+
+    def revoke_token(self, token: str) -> None:
+        if token:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM login_tokens WHERE token_hash = ?", (self._token_hash(token),))
+
+    def revoke_all_tokens(self, email: str) -> int:
+        """Sign this account out on every browser."""
+        with self._conn() as conn:
+            return conn.execute("DELETE FROM login_tokens WHERE email = ?",
+                                (self.normalise(email),)).rowcount
+
+
 def new_guest_email() -> str:
     """A private identity for one guest session."""
     return f"guest-{secrets.token_hex(8)}@{GUEST_DOMAIN}"
@@ -168,9 +223,12 @@ def is_guest_email(email: str) -> bool:
     return (email or "").endswith("@" + GUEST_DOMAIN)
 
 
-def session_expired(signed_in_at: Optional[float], now: Optional[float] = None) -> bool:
+def session_expired(signed_in_at: Optional[float], now: Optional[float] = None,
+                    remember: bool = False) -> bool:
+    """A normal sign-in lasts 8 hours; with "keep me signed in", 30 days."""
     now = time.time() if now is None else now
-    return signed_in_at is None or now - signed_in_at > SESSION_SECONDS
+    limit = REMEMBER_SECONDS if remember else SESSION_SECONDS
+    return signed_in_at is None or now - signed_in_at > limit
 
 
 # ----------------------------------------------------------------- files at rest

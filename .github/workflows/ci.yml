@@ -50,6 +50,10 @@ jobs:
       - name: Run all other tests
         run: |
           python -m pytest test_appliance_intelligence.py test_chatbot_routing.py test_notifications.py -v --tb=short
+
+      - name: Run scheduler, sign-in, meter API, ensemble and interval tests
+        run: |
+          python -m pytest test_scheduler_jobs.py test_remember_me.py test_meter_api.py test_ensemble.py test_prediction_intervals.py -v --tb=short
       
       - name: Check imports
         run: |
@@ -57,7 +61,7 @@ jobs:
       
       - name: Lint (basic)
         run: |
-          python -m py_compile app.py db.py auth.py model.py data.py replay.py notifications.py scheduler_jobs.py
+          python -m py_compile app.py db.py auth.py model.py data.py replay.py notifications.py scheduler_jobs.py data_source.py ensemble.py
           echo "Syntax check passed"
 
   docker:
