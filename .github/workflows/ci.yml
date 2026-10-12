@@ -31,6 +31,10 @@ jobs:
           pip install --upgrade pip
           pip install --timeout 300 --retries 3 -r requirements.txt
       
+      - name: Verify pytest-timeout installation
+        run: |
+          python -c "import pytest_timeout; print('pytest-timeout OK')" || pip install pytest-timeout>=2.1
+      
       - name: Run prediction pipeline tests
         run: |
           python -m pytest test_prediction_pipeline.py -v --timeout=60
