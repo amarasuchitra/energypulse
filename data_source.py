@@ -93,7 +93,9 @@ COLUMN_ALIASES = {
 }
 
 # UCI exports split the timestamp across two columns.
-DATE_COL_KEYS = {"date", "day", "datetime", "datetimestamp"}
+DATE_COL_KEYS = {"date", "day", "datetime", "datetimestamp", "timestamp", "dt",
+                 "recordedat", "readingdatetime", "measuredat", "observationdate",
+                 "dateandtime"}
 TIME_COL_KEYS = {"time", "clock", "hour", "timeofday"}
 
 # Plausible unit conversions for the power column, applied as a divisor.
@@ -304,21 +306,21 @@ def normalize_uploaded(raw: pd.DataFrame, power_unit=None, resample=True):
         "ignored": [],
         "detected_unit": None,
         "applied_unit": None,
-        "rows_in": int(len(raw)),
+        "rows_in": int(len(raw)) if raw is not None else 0,
         "rows_out": 0,
         "interval": None,
         "notes": [],
         "note_codes": [],
     }
 
-    if raw is None or raw.empty:
-        note("src_note_empty")
-        return pd.DataFrame(), report
-
     def note(code, **params):
         """Record an explanatory note twice: text for logs, code for the UI."""
         report["note_codes"].append((code, params))
         report["notes"].append(_NOTE_TEXT.get(code, code).format(**params))
+
+    if raw is None or raw.empty:
+        note("src_note_empty")
+        return pd.DataFrame(), report
 
     df = raw.copy()
     df.columns = [str(c).strip() for c in df.columns]

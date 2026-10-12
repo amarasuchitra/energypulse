@@ -4,7 +4,6 @@ FROM python:3.11-slim AS builder
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
-    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Create virtual environment
@@ -21,6 +20,7 @@ FROM python:3.11-slim AS runtime
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
     tesseract-ocr \
     libglib2.0-0 \
     libsm6 \

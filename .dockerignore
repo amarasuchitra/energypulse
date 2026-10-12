@@ -28,9 +28,7 @@ logs/
 *.sqlite
 data/energypulse.db
 
-# Model files (large)
-models/*.keras
-models/*.pkl
+# The trained models in models/ are needed at runtime, so they are NOT ignored.
 
 # Test artifacts
 .pytest_cache/

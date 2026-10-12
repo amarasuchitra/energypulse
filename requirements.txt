@@ -1,4 +1,5 @@
-streamlit>=1.41
+# width="stretch" on buttons, charts and tables needs Streamlit 1.50 or newer.
+streamlit>=1.50
 streamlit-autorefresh>=1.0
 pandas>=2.0
 numpy>=1.24

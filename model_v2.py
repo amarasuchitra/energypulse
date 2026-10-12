@@ -58,7 +58,7 @@ def add_engineered_features(df: pd.DataFrame) -> pd.DataFrame:
     df["is_weekend"] = (df["day_of_week"] >= 5).astype(int)
     df["month"] = dt.dt.month
     df["day_of_month"] = dt.dt.day
-    df["week_of_year"] = dt.dt.isocalendar().week
+    df["week_of_year"] = dt.dt.isocalendar().week.astype(int)
     
     # ── Cyclical encoding ──
     # Hour: 24-hour cycle
@@ -110,7 +110,7 @@ def add_engineered_features(df: pd.DataFrame) -> pd.DataFrame:
     df["sm3_ratio"] = df["Sub_metering_3"] / total_sm.replace(0, np.nan)
     
     # Fill NaN from lags/rolling
-    df = df.fillna(method="bfill").fillna(method="ffill").fillna(0)
+    df = df.bfill().ffill().fillna(0)
     
     return df
 
@@ -466,7 +466,7 @@ def next_month_forecast_v2(model, feature_cols, df, days=30):
     future_df["is_weekend"] = (future_df["day_of_week"] >= 5).astype(int)
     future_df["month"] = dt.dt.month
     future_df["day_of_month"] = dt.dt.day
-    future_df["week_of_year"] = dt.dt.isocalendar().week
+    future_df["week_of_year"] = dt.dt.isocalendar().week.astype(int)
     
     # Add cyclical encoding
     future_df["hour_sin"] = np.sin(2 * np.pi * future_df["hour"] / 24)
