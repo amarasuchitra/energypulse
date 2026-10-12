@@ -1246,12 +1246,16 @@ def _render_returning_user_welcome(saved_home: dict, user_name: str, household_i
     with main_col:
         with st.container(key="onboard_panel"):
             # Summary card
+            # Built outside the f-string: Python 3.11 allows no backslash inside {}.
+            dot = " \u00b7 "
+            city_part = f"{dot}{html.escape(str(city))}" if city else ""
+            size_part = f"{dot}{T('sqft_suffix', n=home_size)}" if home_size else ""
             st.markdown(f"""
             <div class='ep-brief' style='margin-bottom:1.5rem'>
                 <b>{T('your_current_setup')}</b><br>
-                <b>{home_type}</b> \u00b7 {T('people_suffix', n=occupants)} \u00b7 {T('rate_suffix', rate=tariff_rate)}
-                {f" \u00b7 {city}" if city else ""}
-                {f" \u00b7 {home_size} {T('sqft_suffix', n=home_size)}" if home_size else ""}
+                <b>{home_type}</b>{dot}{T('people_suffix', n=occupants)}{dot}{T('rate_suffix', rate=tariff_rate)}
+                {city_part}
+                {size_part}
             </div>
             """, unsafe_allow_html=True)
             
