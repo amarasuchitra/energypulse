@@ -137,6 +137,8 @@ class DatabaseManager:
                     last_bill_alert_at TIMESTAMP,
                     last_weekly_summary_at TIMESTAMP,
                     last_optimization_key TEXT,
+                    onboarding_completed BOOLEAN DEFAULT 0,
+                    onboarding_completed_at TIMESTAMP,
                     FOREIGN KEY (household_id) REFERENCES users(household_id)
                 )
             """)
@@ -635,6 +637,8 @@ class DatabaseManager:
             "last_bill_alert_at": None,
             "last_weekly_summary_at": None,
             "last_optimization_key": None,
+            "onboarding_completed": False,
+            "onboarding_completed_at": None,
         }
 
     def ensure_household_settings(self, household_id: str) -> None:
@@ -649,6 +653,7 @@ class DatabaseManager:
         allowed = {
             "bill_threshold", "last_bill_alert_at",
             "last_weekly_summary_at", "last_optimization_key",
+            "onboarding_completed", "onboarding_completed_at",
         }
         updates = {k: v for k, v in updates.items() if k in allowed}
         if not updates:
@@ -662,6 +667,19 @@ class DatabaseManager:
                 f"UPDATE household_settings SET {set_clause} WHERE household_id = ?",
                 values,
             )
+
+    def is_onboarding_completed(self, household_id: str) -> bool:
+        """Check if user has completed onboarding."""
+        settings = self.get_household_settings(household_id)
+        return bool(settings.get("onboarding_completed", False))
+
+    def mark_onboarding_completed(self, household_id: str) -> None:
+        """Mark onboarding as completed for a household."""
+        from datetime import datetime
+        self.update_household_settings(household_id, {
+            "onboarding_completed": True,
+            "onboarding_completed_at": datetime.now().isoformat(),
+        })
     
     # ────────────── UTILITIES ──────────────────────────────────────────────────
     

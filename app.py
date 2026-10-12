@@ -1032,9 +1032,278 @@ def render_login_screen():
 
 
 def render_onboarding():
-    if "home_details" in st.session_state and st.session_state.home_details is not None:
+    """
+    Handle onboarding for both new and returning users.
+    Returns True when user has a valid home setup and can proceed to dashboard.
+    """
+    # If already have home details in session, we're good to go
+    if st.session_state.get("home_details") is not None:
         return True
+    
     init_language()
+    auth = st.session_state.auth
+    household_id = current_household_id()
+    db = get_db()
+    user_name = auth.get("name", "there")
+    is_guest = auth.get("guest", False)
+    
+    # For guests, always show onboarding (they don't have persistent data)
+    if is_guest:
+        return _render_new_user_onboarding(user_name)
+    
+    # For authenticated users, check if they have completed onboarding
+    saved_home = db.get_home_details(household_id)
+    onboarding_done = db.is_onboarding_completed(household_id)
+    
+    if onboarding_done and saved_home:
+        # Returning user with completed onboarding - show welcome screen
+        return _render_returning_user_welcome(saved_home, user_name, household_id, db)
+    elif saved_home:
+        # User has saved home but hasn't completed onboarding (edge case)
+        # Pre-populate and continue
+        st.session_state.home_details = saved_home
+        return True
+    else:
+        # New user - show full onboarding
+        return _render_new_user_onboarding(user_name)
+
+
+def _render_returning_user_welcome(saved_home: dict, user_name: str, household_id: str, db) -> bool:
+    """Show welcome screen for returning users with Continue/Edit options."""
+    init_language()
+    
+    # Check if user wants to edit
+    if st.session_state.get("edit_mode"):
+        return _render_edit_onboarding(saved_home, user_name, household_id, db)
+    
+    # Prepare appliance summary
+    appliances = saved_home.get("appliances", [])
+    appliance_names = []
+    for a in appliances:
+        if isinstance(a, dict):
+            name = a.get("name", a.get("type_key", "Unknown"))
+            type_key = a.get("type_key", a.get("type", ""))
+            if type_key:
+                t = catalog.get_type(type_key)
+                if t:
+                    name = t.name
+            appliance_names.append(name)
+        else:
+            appliance_names.append(str(a))
+    
+    home_type = home_type_label(saved_home.get("home_type", "Apartment"))
+    occupants = saved_home.get("occupants", 0)
+    tariff_rate = saved_home.get("tariff_rate", 8.0)
+    city = saved_home.get("city", "")
+    home_size = saved_home.get("home_size", 0)
+    
+    side, main_col = st.columns([1, 1.75], gap="large")
+    with side:
+        st.markdown(
+            wordmark()
+            + f"<div class='ep-head' style='margin-top:2.6rem'><h1>{T('welcome_back', name=user_name)}</h1>"
+              f"<p>{T('welcome_back_msg')}</p></div>", unsafe_allow_html=True)
+        st.markdown("")
+        render_language_selector(key="lang_select_welcome")
+    
+    with main_col:
+        with st.container(key="onboard_panel"):
+            # Summary card
+            st.markdown(f"""
+            <div class='ep-brief' style='margin-bottom:1.5rem'>
+                <b>{T('your_current_setup')}</b><br>
+                <b>{home_type}</b> \u00b7 {T('people_suffix', n=occupants)} \u00b7 {T('rate_suffix', rate=tariff_rate)}
+                {f" \u00b7 {city}" if city else ""}
+                {f" \u00b7 {home_size} {T('sqft_suffix', n=home_size)}" if home_size else ""}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            if appliance_names:
+                st.markdown(f"**{T('your_appliances')}** ({len(appliance_names)})")
+                for i, name in enumerate(appliance_names[:10], 1):
+                    st.markdown(f"  {i}. {name}")
+                if len(appliance_names) > 10:
+                    st.caption(f"... and {len(appliance_names) - 10} more")
+            
+            st.markdown("")
+            c1, c2 = st.columns(2, gap="medium")
+            with c1:
+                if st.button(T("btn_continue_saved"), width="stretch", type="primary", key="btn_continue"):
+                    st.session_state.home_details = saved_home
+                    notify("success", T("loaded_saved_setup"))
+                    st.rerun()
+            with c2:
+                if st.button(T("btn_edit_setup"), width="stretch", key="btn_edit"):
+                    st.session_state.edit_mode = True
+                    st.session_state.onboard_data = _prepare_edit_data(saved_home)
+                    st.session_state.onboard_step = 1
+                    st.rerun()
+    
+    return False
+
+
+def _prepare_edit_data(saved_home: dict) -> dict:
+    """Prepare onboarding data from saved home details for editing."""
+    appliances = saved_home.get("appliances", [])
+    # Convert appliances to the format expected by onboarding
+    normalized_appliances = []
+    for a in appliances:
+        if isinstance(a, dict):
+            normalized_appliances.append(a)
+        else:
+            normalized_appliances.append({"name": str(a), "type": "Other", "usage": "Medium"})
+    
+    return {
+        "home_type": saved_home.get("home_type", "Apartment"),
+        "occupants": saved_home.get("occupants", 1),
+        "appliances": normalized_appliances,
+        "tariff_rate": saved_home.get("tariff_rate", 8.0),
+        "city": saved_home.get("city", ""),
+        "home_size": saved_home.get("home_size", 0) or 0,
+        "timezone": saved_home.get("timezone") or user_tz(),
+    }
+
+
+def _render_edit_onboarding(saved_home: dict, user_name: str, household_id: str, db) -> bool:
+    """Render onboarding flow pre-populated with existing data for editing."""
+    init_language()
+    
+    if "onboard_step" not in st.session_state:
+        st.session_state.onboard_step = 1
+    if "onboard_data" not in st.session_state:
+        st.session_state.onboard_data = _prepare_edit_data(saved_home)
+    
+    step = st.session_state.onboard_step
+    od = st.session_state.onboard_data
+    
+    step_labels = [T("step_home_info"), T("step_appliances"), T("step_rate")]
+    side, main_col = st.columns([1, 1.75], gap="large")
+    with side:
+        st.markdown(
+            wordmark()
+            + f"<div class='ep-head' style='margin-top:2.6rem'><h1>{T('edit_your_setup')}</h1>"
+              f"<p>{T('edit_setup_msg')}</p></div>"
+            + step_list(step_labels, step), unsafe_allow_html=True)
+        st.markdown("")
+        render_language_selector(key="lang_select_onboard_edit")
+    
+    with main_col:
+        with st.container(key="onboard_panel"):
+            if step == 1:
+                _render_onboard_step1(od)
+            elif step == 2:
+                _render_onboard_step2(od)
+            elif step == 3:
+                _render_onboard_step3_edit(od, household_id, db, saved_home)
+    
+    return False
+
+
+def _render_onboard_step3_edit(od, household_id: str, db, saved_home: dict):
+    """Step 3 for edit mode - shows save/cancel instead of finish."""
+    section(T("rate_section_title"))
+    st.markdown(f'<div style="color:var(--mist);font-size:0.82rem;margin-bottom:0.8rem;">'
+                f'{T("rate_hint")}</div>',
+                unsafe_allow_html=True)
+    city = od.get("city", "")
+    tariff_val = od.get("tariff_rate", 8.0)
+    if city and tariff_val == 8.0:
+        suggested = CITY_TARIFF_DEFAULTS.get(city.strip().title(), None)
+        if suggested:
+            st.info(T("avg_rate_for", city=city.strip().title(), rate=suggested))
+            if st.button(T("use_city_rate", rate=suggested), key="ob_use_city_rate", type="secondary"):
+                od["tariff_rate"] = suggested
+                st.rerun()
+    tariff = st.number_input(T("your_rate_label"),
+        min_value=0.5, max_value=30.0, value=float(od.get("tariff_rate", 8.0)),
+        step=0.5, key="ob_tariff")
+    od["tariff_rate"] = tariff
+    
+    st.markdown("")
+    c_back, c_cancel, c_save = st.columns([1, 1, 1])
+    with c_back:
+        if st.button(T("btn_back"), width="stretch", key="ob_back3_edit"):
+            st.session_state.onboard_step = 2
+            st.rerun()
+    with c_cancel:
+        if st.button(T("btn_cancel"), width="stretch", key="ob_cancel_edit"):
+            if _has_unsaved_changes(od, saved_home):
+                st.session_state.confirm_cancel = True
+                st.rerun()
+            else:
+                st.session_state.edit_mode = False
+                st.session_state.pop("onboard_data", None)
+                st.session_state.pop("onboard_step", None)
+                st.rerun()
+    with c_save:
+        if st.button(T("btn_save_changes"), width="stretch", type="primary", key="ob_save_edit"):
+            _save_edited_setup(od, household_id, db)
+            st.session_state.edit_mode = False
+            st.session_state.pop("onboard_data", None)
+            st.session_state.pop("onboard_step", None)
+            notify("success", T("setup_saved"))
+            st.rerun()
+    
+    # Confirm cancel dialog
+    if st.session_state.get("confirm_cancel"):
+        st.warning(T("confirm_discard_changes"))
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            if st.button(T("yes_discard"), width="stretch", type="primary", key="confirm_discard_yes"):
+                st.session_state.edit_mode = False
+                st.session_state.confirm_cancel = False
+                st.session_state.pop("onboard_data", None)
+                st.session_state.pop("onboard_step", None)
+                st.rerun()
+        with cc2:
+            if st.button(T("no_keep_editing"), width="stretch", key="confirm_discard_no"):
+                st.session_state.confirm_cancel = False
+                st.rerun()
+
+
+def _has_unsaved_changes(od: dict, saved_home: dict) -> bool:
+    """Check if there are unsaved changes compared to saved home."""
+    # Compare key fields
+    if od.get("home_type") != saved_home.get("home_type"):
+        return True
+    if od.get("occupants") != saved_home.get("occupants"):
+        return True
+    if od.get("tariff_rate") != saved_home.get("tariff_rate"):
+        return True
+    if od.get("city") != saved_home.get("city"):
+        return True
+    if od.get("home_size") != (saved_home.get("home_size") or 0):
+        return True
+    # Compare appliances (simplified)
+    saved_appliances = saved_home.get("appliances", [])
+    if len(od.get("appliances", [])) != len(saved_appliances):
+        return True
+    return False
+
+
+def _save_edited_setup(od: dict, household_id: str, db):
+    """Save edited home setup to database."""
+    st.session_state.home_details = {
+        "home_type": od["home_type"],
+        "occupants": od["occupants"],
+        "appliances": od["appliances"],
+        "num_appliances": len(od["appliances"]),
+        "tariff_rate": od["tariff_rate"],
+        "city": od.get("city", ""),
+        "timezone": od.get("timezone") or user_tz(),
+        "home_size": od.get("home_size", 0) if od.get("home_size", 0) > 0 else None,
+        "peak_morning": (6, 10),
+        "peak_evening": (18, 22),
+    }
+    try:
+        db.save_home_details(household_id, st.session_state.home_details)
+    except Exception:
+        pass
+    st.session_state.pop("home_state", None)
+
+
+def _render_new_user_onboarding(user_name: str) -> bool:
+    """Original onboarding flow for new users."""
     if "onboard_step" not in st.session_state:
         st.session_state.onboard_step = 1
     if "onboard_data" not in st.session_state:
@@ -1044,8 +1313,7 @@ def render_onboarding():
         }
     step = st.session_state.onboard_step
     od = st.session_state.onboard_data
-    user_name = st.session_state.auth.get("name", "there")
-
+    
     step_labels = [T("step_home_info"), T("step_appliances"), T("step_rate")]
     side, main_col = st.columns([1, 1.75], gap="large")
     with side:
@@ -1057,14 +1325,73 @@ def render_onboarding():
         st.markdown("")
         render_language_selector(key="lang_select_onboard")
     with main_col:
-      with st.container(key="onboard_panel"):
-        if step == 1:
-            _render_onboard_step1(od)
-        elif step == 2:
-            _render_onboard_step2(od)
-        elif step == 3:
-            _render_onboard_step3(od)
+        with st.container(key="onboard_panel"):
+            if step == 1:
+                _render_onboard_step1(od)
+            elif step == 2:
+                _render_onboard_step2(od)
+            elif step == 3:
+                _render_onboard_step3_new(od)
     return False
+
+
+def _render_onboard_step3_new(od):
+    """Step 3 for new users - original finish button."""
+    section(T("rate_section_title"))
+    st.markdown(f'<div style="color:var(--mist);font-size:0.82rem;margin-bottom:0.8rem;">'
+                f'{T("rate_hint")}</div>',
+                unsafe_allow_html=True)
+    city = od.get("city", "")
+    tariff_val = od.get("tariff_rate", 8.0)
+    if city and tariff_val == 8.0:
+        suggested = CITY_TARIFF_DEFAULTS.get(city.strip().title(), None)
+        if suggested:
+            st.info(T("avg_rate_for", city=city.strip().title(), rate=suggested))
+            if st.button(T("use_city_rate", rate=suggested), key="ob_use_city_rate", type="secondary"):
+                od["tariff_rate"] = suggested
+                st.rerun()
+    tariff = st.number_input(T("your_rate_label"),
+        min_value=0.5, max_value=30.0, value=float(od.get("tariff_rate", 8.0)),
+        step=0.5, key="ob_tariff")
+    od["tariff_rate"] = tariff
+    st.markdown(f"""
+    <div style="background:var(--ink);border:1px solid var(--line);border-radius:10px;padding:0.8rem 1rem;margin-top:0.3rem;">
+        <div style="font-size:0.78rem;color:var(--mist);">
+            {T("rate_hint_avg")}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("")
+    c_back, c_next = st.columns([1, 1])
+    with c_back:
+        if st.button(T("btn_back"), width="stretch", key="ob_back3"):
+            st.session_state.onboard_step = 2
+            st.rerun()
+    with c_next:
+        if st.button(T("btn_start_dashboard"), width="stretch", type="primary", key="ob_finish"):
+            st.session_state.home_details = {
+                "home_type": od["home_type"],
+                "occupants": od["occupants"],
+                "appliances": od["appliances"],
+                "num_appliances": len(od["appliances"]),
+                "tariff_rate": od["tariff_rate"],
+                "city": od.get("city", ""),
+                "timezone": od.get("timezone") or user_tz(),
+                "home_size": od.get("home_size", 0) if od.get("home_size", 0) > 0 else None,
+                "peak_morning": (6, 10),
+                "peak_evening": (18, 22),
+            }
+            try:
+                get_db().save_home_details(current_household_id(), st.session_state.home_details)
+                get_db().mark_onboarding_completed(current_household_id())
+            except Exception:
+                pass
+            st.session_state.pop("home_state", None)
+            for k in ["onboard_data", "onboard_step"]:
+                if k in st.session_state:
+                    del st.session_state[k]
+            notify("success", "Home saved. Every appliance you listed is now in the 3D home.")
+            st.rerun()
 
 
 def _render_onboard_step1(od):
