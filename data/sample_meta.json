@@ -1,0 +1,10 @@
+{
+  "kind": "sample",
+  "source": "UCI Individual household electric power consumption",
+  "source_url": "https://archive.ics.uci.edu/ml/datasets/Individual+household+electric+power+consumption",
+  "original_start": "2006-12-16 17:00:00",
+  "original_end": "2010-11-26 21:00:00",
+  "rows": 34168,
+  "granularity": "hourly (aggregated from 1-minute readings)",
+  "note": "Demo sample. The dashboard shifts these timestamps forward for display and labels the result as sample data."
+}

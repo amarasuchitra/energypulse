@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1
+      
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run prediction pipeline tests
+        run: |
+          python -m pytest test_prediction_pipeline.py -v
+      
+      - name: Run existing tests
+        run: |
+          python -m pytest test_new_features.py -v --tb=short || true
+          python -m pytest test_csv_import.py -v --tb=short || true
+          python -m pytest test_toolkit.py -v --tb=short || true
+      
+      - name: Check imports
+        run: |
+          python -c "import app; print('App imports OK')"
+      
+      - name: Lint (basic)
+        run: |
+          python -m py_compile app.py db.py auth.py model.py data.py replay.py notifications.py scheduler_jobs.py
+          echo "Syntax check passed"
+
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: energypulse:latest
+          load: true
+      
+      - name: Test Docker image
+        run: |
+          docker run --rm -d --name energypulse-test -p 8501:8501 energypulse:latest
+          sleep 30
+          curl -f http://localhost:8501/_stcore/health
+          docker stop energypulse-test

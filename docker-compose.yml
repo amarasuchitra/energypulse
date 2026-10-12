@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  energypulse:
+    build: .
+    container_name: energypulse
+    ports:
+      - "8501:8501"
+    environment:
+      - ENERGYPULSE_SECRET=${ENERGYPULSE_SECRET}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY}
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./.streamlit:/app/.streamlit
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Add a reverse proxy for production
+  # nginx:
+  #   image: nginx:alpine
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - ./certbot:/etc/letsencrypt:ro
+  #   depends_on:
+  #     - energypulse

@@ -1,0 +1,452 @@
+"""Checks for the household toolkit sums (toolkit.py)."""
+import numpy as np
+import pandas as pd
+import pytest
+
+import toolkit as tk
+from appliance_profiles import APPLIANCE_KEYS
+from daily_brief import _daily
+from meter_sim import simulate_home
+from sessions import extract_sessions
+from tariff import Tariff
+
+DELHI = tk.TARIFF_PRESETS["Delhi (domestic)"]
+
+
+@pytest.fixture(scope="module")
+def home():
+    """Ground-truth simulated home in the same column layout the detector produces."""
+    df = simulate_home(days=24, seed=8, faults=["geyser_left_on", "fridge_seal"])
+    pred = df[["datetime", "mains_kw"]].copy()
+    for key in APPLIANCE_KEYS:
+        pred[f"{key}_kw"] = df[key]
+        pred[f"{key}_on"] = df[key] > 0.05
+    pred["other_kw"] = (df["mains_kw"] - df[APPLIANCE_KEYS].sum(axis=1)).clip(lower=0)
+    tariff = Tariff(8.0, tod_enabled=True)
+    kwh, cost = _daily(pred, APPLIANCE_KEYS, tariff)
+    return pred, tariff, kwh, cost, extract_sessions(pred, tariff)
+
+
+def test_slab_bill_is_worked_out_block_by_block():
+    energy, lines = tk.energy_charge(450, DELHI["slabs"])
+    assert energy == 200 * 3.0 + 200 * 4.5 + 50 * 6.5 and len(lines) == 3
+    assert tk.energy_charge(0, DELHI["slabs"])[0] == 0
+    assert tk.fixed_charge(3, DELHI["fixed"]) == 150 and tk.fixed_charge(2, DELHI["fixed"]) == 40
+    res = tk.bill_check(450, DELHI, 3)
+    assert abs(res["total"] - (1825 + 150 + 1825 * 0.08)) < 1e-6
+    assert tk.bill_check(450, DELHI, 3, billed=res["total"] * 1.02)["verdict"] == "matches"
+    high = tk.bill_check(450, DELHI, 3, billed=res["total"] + 400)
+    assert high["verdict"] == "higher" and abs(high["difference"] - 400) < 1e-6
+    assert tk.bill_check(450, DELHI, 3, billed=res["total"] - 400)["verdict"] == "lower"
+    flat = tk.bill_check(100, tk.TARIFF_PRESETS["Karnataka (BESCOM, domestic)"], 2)
+    assert abs(flat["energy"] - 580) < 1e-6 and flat["fixed"] == 290
+
+
+def test_slab_warning_says_when_and_what_it_costs():
+    days = pd.date_range("2026-10-01", periods=11)
+    position = tk.month_position(pd.Series([12.0] * 11, index=days))
+    assert position["used"] == 120 and position["days_left"] == 21 and abs(position["projected"] - 372) < 1e-6
+    warn = tk.slab_warning(position, DELHI["slabs"])
+    assert warn["boundary"] == 200 and warn["will_cross"] and warn["next_rate"] == 4.5
+    assert abs(warn["extra_cost"] - 172 * 1.5) < 1e-6 and abs(warn["allowance"] - 80 / 21) < 1e-6
+    assert 16 <= warn["cross_day"] <= 18
+    light = tk.slab_warning(tk.month_position(pd.Series([4.0] * 11, index=days)), DELHI["slabs"])
+    assert not light["will_cross"]
+    assert tk.slab_warning(position, [(None, 5.8)])["flat"]
+
+
+def test_bill_change_is_split_by_appliance(home):
+    _, _, kwh, cost, _ = home
+    why = tk.explain_change(kwh, cost, span=10)
+    assert abs(sum(r["delta_cost"] for r in why["rows"]) - why["delta_cost"]) < 0.01
+    assert abs(sum(r["delta_kwh"] for r in why["rows"]) - why["delta_kwh"]) < 0.01
+
+
+def test_faults_and_overload_are_found(home):
+    pred, _, _, _, sessions = home
+    events = tk.health_events(pred, sessions, APPLIANCE_KEYS)
+    kinds = {(e["appliance"], e["kind"]) for e in events}
+    assert ("geyser", "Long run") in kinds and ("fridge", "Compressor overworking") in kinds
+    tight = tk.peak_demand(pred, 1.0, APPLIANCE_KEYS)
+    roomy = tk.peak_demand(pred, 50.0, APPLIANCE_KEYS)
+    assert tight["over"] and not roomy["near"] and tight["worst"]["kw"] == roomy["worst"]["kw"]
+    assert tight["worst"]["kw"] <= pred["mains_kw"].max() + 1e-9
+
+
+def test_left_on_is_notified_once(tmp_path, home):
+    from db import DatabaseManager
+    from sessions import flag_long_runs
+    _, _, _, _, sessions = home
+    flags = flag_long_runs(sessions)[:2]
+    db = DatabaseManager(db_path=str(tmp_path / "l.db"))
+    people = [{"name": "Amara", "email": "amara@example.com"}]
+    assert len(tk.send_left_on(db, "h1", people, flags)) == len(flags) > 0
+    assert tk.send_left_on(db, "h1", people, flags) == []
+
+
+def test_upgrade_sums(home):
+    pred = home[0]
+    rows = tk.replacement_table({"fridge": 60.0, "ac": 200.0, "microwave": 5.0}, 8.0)
+    by = {r["key"]: r for r in rows}
+    assert set(by) == {"fridge", "ac"}
+    assert abs(by["ac"]["saved_rs"] - 200 * 0.30 * 8) < 1e-6
+    assert abs(by["ac"]["payback_months"] - 42000 / 480) < 1e-6
+    assert tk.solar_subsidy(1) == 30000 and tk.solar_subsidy(2) == 60000 and tk.solar_subsidy(3) == 78000
+    assert tk.solar_subsidy(8) == 78000
+    with_net = tk.solar_estimate(pred, 8.0, kwp=3, net_metering=True)
+    without = tk.solar_estimate(pred, 8.0, kwp=3, net_metering=False)
+    assert with_net["generated"] == 360 and without["used"] <= with_net["used"] <= with_net["month_kwh"] + 1e-6
+    assert with_net["net_cost"] == 3 * 60000 - 78000 and with_net["payback_years"] > 0
+    size = tk.backup_size([{"name": "Fan", "kw": 0.07}, {"name": "TV", "kw": 0.1}, {"name": "Geyser", "kw": 2.0}], 3)
+    assert abs(size["va"] - 2170 / 0.8 * 1.25) < 1e-6 and size["heavy"] == ["Geyser"]
+    small = tk.backup_size([{"name": "Fan", "kw": 0.07}, {"name": "TV", "kw": 0.1}], 4)
+    assert small["standard_va"] == 600 and abs(small["ah"] - 170 * 4 / 9.6) < 1e-6 and small["batteries"] == 1
+
+
+def test_goal_schedule_and_carbon(home):
+    _, _, _, cost, sessions = home
+    days = pd.date_range("2026-10-01", periods=11)
+    g = tk.goal_status(pd.Series([100.0] * 8 + [60.0, 50.0, 999.0], index=days), 3100.0)
+    assert g["spent"] == 910 and g["streak"] == 10 and g["days_left"] == 21
+    assert not tk.goal_status(pd.Series([200.0] * 11, index=days), 3100.0)["on_track"]
+    assert tk.goal_status(pd.Series([200.0] * 11, index=days), 3100.0)["streak"] == 0
+    report = tk.schedule_report(sessions, {"geyser": (0, 1440), "washing_machine": (0, 1)})
+    by = {r["key"]: r for r in report}
+    assert by["geyser"]["runs"] > 0 and not by["geyser"]["outside"]
+    assert by["washing_machine"]["runs"] == len(by["washing_machine"]["outside"])
+    assert abs(tk.carbon_kg(100) - 71) < 1e-6
+
+
+def test_member_activity_pairs_on_with_off():
+    import json
+    def row(who, device, on, at):
+        return {"notification_type": "appliance_switch", "triggered_by": who, "sent_at": at,
+                "subject": f"{who} {device} {on}", "trigger_data_json": json.dumps({"device": device, "on": on})}
+    log = [row("Amara", "tv", True, "2026-10-05 10:00:00"), row("Amara", "tv", True, "2026-10-05 10:00:00"),
+           row("Ravi", "tv", False, "2026-10-05 12:00:00"), row("Ravi", "fan", True, "2026-10-05 12:30:00"),
+           {"notification_type": "daily_forecast", "sent_at": "2026-10-05 08:00:00"}]
+    rows = {r["name"]: r for r in tk.member_activity(log, {"tv": 0.1, "fan": 0.07}, {"tv": "Television"}, 8.0)}
+    assert rows["Amara"]["switches"] == 1 and rows["Ravi"]["switches"] == 2      # the duplicate row is one event
+    assert rows["Amara"]["minutes"] == 120 and abs(rows["Amara"]["cost"] - 0.2 * 8) < 1e-6
+    assert rows["Amara"]["most_used"] == "Television"
+
+
+def test_weekly_pdf_complaint_and_outages():
+    pdf = tk.weekly_report_pdf({
+        "household": "Amara", "prepared": "05 Oct 2026", "period": "28 Sep to 04 Oct 2026", "kwh": 98.4, "cost": 790.0,
+        "change_pct": -4.0, "appliances": [{"name": "Air Conditioner", "kwh": 40.0, "cost": 320.0, "share": 41.0}],
+        "actions": [{"title": "Raise the AC by 2 degrees", "saving_month": 150.0, "calculation": "12% of Rs. 1250"}],
+        "events": [{"when": pd.Timestamp("2026-10-02"), "name": "Geyser", "kind": "Long run", "text": "Ran 95 min."}],
+        "members": [{"name": "Amara", "switches": 3, "most_used": "Television"}], "co2": 69.9})
+    assert pdf[:5] == b"%PDF-" and len(pdf) > 1500
+    letter = tk.complaint_letter("Bill amount looks wrong", "Amara", "C-123", "12 Lake Road", "BESCOM",
+                                 ["Units billed: 450.", "Difference: Rs. 400 more than expected."])
+    for text in ["Consumer No. C-123", "BESCOM", "1. Units billed: 450.", "Yours faithfully,", "Amara"]:
+        assert text in letter
+    today = pd.Timestamp("2026-10-05")
+    out = tk.outage_summary([{"date": "2026-10-02", "start": "18:00", "minutes": 90, "note": ""},
+                             {"date": "2026-09-20", "start": "07:00", "minutes": 30, "note": ""},
+                             {"date": "2026-07-01", "start": "07:00", "minutes": 600, "note": ""}], today)
+    assert out["hours_month"] == 1.5 and out["hours_30"] == 2.0 and out["longest"] == 600 and out["count"] == 3
+    assert tk.outage_summary([], today)["count"] == 0
+
+
+def test_settings_store_is_private_to_a_household(tmp_path):
+    from db import DatabaseManager
+    db = DatabaseManager(db_path=str(tmp_path / "s.db"))
+    assert db.get_store("h1", "toolkit", {}) == {}
+    db.set_store("h1", "toolkit", {"goal": 2500})
+    db.set_store("h1", "toolkit", {"goal": 2600})
+    assert db.get_store("h1", "toolkit") == {"goal": 2600} and db.get_store("h2", "toolkit") is None
+
+
+def test_usage_levels_and_household_size_change_the_simulated_home():
+    from meter_source import habits_key, split_scenario, with_habits
+    base = simulate_home(days=14, seed=3)
+    heavy = simulate_home(days=14, seed=3, usage={"ac": 1.5})
+    light = simulate_home(days=14, seed=3, usage={"ac": 0.6})
+    assert light["ac"].sum() < base["ac"].sum() < heavy["ac"].sum()
+    assert abs(heavy["fridge"].sum() - base["fridge"].sum()) < 1e-6          # the fridge is not a habit
+    big, small = simulate_home(days=14, seed=3, people=7), simulate_home(days=14, seed=3, people=1)
+    for col in ["geyser", "other_kw"]:
+        assert small[col].sum() < base[col].sum() < big[col].sum()
+    home = {"occupants": 6, "appliances": [{"name": "Air Conditioner", "usage": "High"},
+                                           {"name": "Refrigerator", "usage": "Medium"},
+                                           {"name": "Water Heater", "usage": "Low"}]}
+    assert habits_key(home) == "ac=1.5,geyser=0.6;people=6"
+    assert split_scenario(with_habits("Geyser left on by mistake", home)) == (
+        "Geyser left on by mistake", {"ac": 1.5, "geyser": 0.6}, 6.0)
+    assert split_scenario("Typical summer home") == ("Typical summer home", {}, 4.0)
+    assert with_habits("Typical summer home", home) != with_habits("Typical summer home", {**home, "occupants": 2})
+
+
+def test_right_now_only_counts_what_has_happened(home):
+    from daily_brief import right_now
+    pred, tariff = home[0], home[1]
+    early, late = right_now(pred, APPLIANCE_KEYS, tariff, 6 * 60), right_now(pred, APPLIANCE_KEYS, tariff, 21 * 60)
+    assert early["kwh"] < late["kwh"] and early["cost"] < late["cost"]
+    assert len(early["trace"]) == 361 and len(late["typical"]) == 1440
+    today = pred.tail(1440)
+    assert abs(late["kwh"] - today["mains_kw"].iloc[:1261].sum() / 60) < 1e-6
+    assert late["next_lo"] <= late["next_kw"] <= late["next_hi"] and late["next_days"] >= 7
+    assert right_now(pred, APPLIANCE_KEYS, tariff, 23 * 60 + 50)["next_days"] >= 7     # hour that wraps midnight
+
+
+def test_weather_is_repeatable_and_drives_the_air_conditioner():
+    import weather
+    from meter_source import habits_key, scenario_place, with_habits
+    days = pd.date_range("2026-05-01", periods=30)
+    delhi, again = weather.daily_high(days, "Delhi"), weather.daily_high(days, "delhi")
+    assert delhi.equals(again) and not delhi.equals(weather.daily_high(days, "Kochi"))
+    assert weather.daily_high(pd.date_range("2026-05-10", periods=20), "Delhi").mean() \
+        > weather.daily_high(pd.date_range("2026-12-20", periods=20), "Delhi").mean() + 8      # summer vs winter
+    assert abs(weather.forecast_high("2026-05-10", "Delhi") - float(weather.daily_high(["2026-05-10"], "Delhi").iloc[0])) < 4
+    assert weather.cooling_need(20) == 0 and weather.cooling_need(32) == 1 and weather.cooling_need(40) > 1.5
+    hot = simulate_home(days=14, seed=5, temps=[38.0] * 14)
+    mild = simulate_home(days=14, seed=5, temps=[27.0] * 14)
+    cold = simulate_home(days=14, seed=5, temps=[20.0] * 14)
+    assert cold["ac"].sum() == 0 and mild["ac"].sum() < hot["ac"].sum()
+    assert simulate_home(days=14, seed=5, area_sqft=2200)["other_kw"].sum() > simulate_home(days=14, seed=5, area_sqft=600)["other_kw"].sum()
+    home = {"occupants": 3, "home_size": 1400, "city": " New Delhi ", "appliances": []}
+    assert habits_key(home) == ";people=3;size=1400;city=new delhi"
+    assert scenario_place(with_habits("Typical summer home", home)) == ("new delhi", 1400.0)
+    assert scenario_place("Typical summer home") == ("", 1000.0)
+
+
+def test_forecast_follows_temperature_when_weather_is_given():
+    from daily_brief import build_brief
+    days = 26
+    temps = ([26.0] * 3 + [37.0] * 3) * 4 + [26.0, 26.0]     # mild and hot spells; the day before today is mild
+    df = simulate_home(days=days, seed=11, temps=temps, start="2026-05-01")
+    pred = df[["datetime", "mains_kw"]].copy()
+    for key in APPLIANCE_KEYS:
+        pred[f"{key}_kw"], pred[f"{key}_on"] = df[key], df[key] > 0.05
+    pred["other_kw"] = df["other_kw"]
+    series = pd.Series(temps, index=pd.date_range("2026-05-01", periods=days))
+    tariff = Tariff(8.0, tod_enabled=True)
+    ac = lambda b: next(a["kwh"] for a in b["appliances"] if a["key"] == "ac")
+    hot = build_brief(pred, APPLIANCE_KEYS, tariff, temps=series, forecast_temp=38.0)
+    mild = build_brief(pred, APPLIANCE_KEYS, tariff, temps=series, forecast_temp=25.0)
+    plain = build_brief(pred, APPLIANCE_KEYS, tariff)
+    # today follows two mild days: the plain average overshoots, the weather-aware figure does not
+    assert ac(mild) < ac(hot) and ac(mild) < ac(plain) and hot["uses_weather"] and hot["temp_today"] == 38.0
+    assert plain["temp_today"] is None
+    # knowing the temperature makes the replayed forecast less wrong on this home
+    assert build_brief(pred, APPLIANCE_KEYS, tariff, temps=series, forecast_temp=26.0,
+                       temp_forecasts=series)["error_pct"] < plain["error_pct"]
+    parts = sum(a["kwh"] for a in hot["appliances"]) + hot["other_kwh"]
+    assert abs(parts - hot["total_kwh"]) < 0.15
+
+
+def test_appliances_left_on_for_hours_are_still_detected():
+    from disaggregate import MODEL_PATH, Disaggregator, evaluate
+    from meter_sim import simulate_from_switches
+    model = Disaggregator.load(MODEL_PATH)
+    day = simulate_from_switches({"geyser": [(100, 500)], "microwave": [(700, 706)], "ac": [(300, 1300)],
+                                  "water_pump": [(1350, 1380)]}, seed=77)
+    scores = evaluate(model.predict(day[["datetime", "mains_kw"]]), day)
+    assert scores["geyser"]["recall"] > 0.8 and scores["ac"]["recall"] > 0.9
+    assert scores["microwave"]["recall"] >= 0.5 and scores["water_pump"]["recall"] > 0.8   # a short run is found within a minute or two
+    # Known limit: a water pump running at the same time as the AC is often missed
+    # (similar power steps); see models/nilm_metrics.json, stacked_days.
+
+
+def test_chat_answers_come_from_the_meter(home):
+    import meter_chat
+    from daily_brief import build_brief
+    pred, tariff, kwh, cost, _ = home
+    today = pd.to_datetime(pred["datetime"]).dt.normalize().iloc[-1]
+    history = pred[pd.to_datetime(pred["datetime"]).dt.normalize() < today]
+    base = {"kwh": kwh, "cost": cost, "history": history, "sessions": extract_sessions(history, tariff),
+            "avg_rate": float(cost["total"].iloc[:-1].sum() / kwh["total"].iloc[:-1].sum())}
+    brief = build_brief(pred, APPLIANCE_KEYS, tariff)
+    ask = lambda q: meter_chat.answer(q, base, brief, APPLIANCE_KEYS, [{"name": "Television"}])
+    top = ask("Which appliance uses the most energy?")
+    week = kwh.iloc[:-1].tail(7)
+    assert f"{week['total'].sum():.1f} units" in top and "Air Conditioner" in top
+    assert "should stay on" in ask("Can I switch off the fridge at night?")
+    assert f"{brief['total_kwh']:.1f} units" in ask("What is the forecast for today?")
+    assert "Geyser" in ask("How much does the geyser use?") and "Rs." in ask("What will my bill be this month?")
+    assert "fault" in ask("Is anything left on or faulty?").lower()
+    assert "Television" in ask("What appliances do I have?")
+    for text in [top, ask("why did my use go up?"), ask("how can I save money?")]:
+        assert text.endswith("_From your simulated meter._")
+    assert ask("Tell me a joke") is None
+
+
+def test_catalogue_specifications_are_consistent():
+    import catalog
+    assert len(catalog.CATALOG) >= 25 and len(catalog.CATEGORIES) >= 5
+    for t in catalog.CATALOG:
+        assert t.models, t.key
+        for m in t.models:
+            s = catalog.specs(m.id)
+            assert 0 < s["running_w"] <= s["rated_w"], m.id
+            assert abs(s["current_a"] - s["rated_w"] / (230 * s["power_factor"])) < 0.01
+            assert 0.5 <= s["power_factor"] <= 1.0 and s["voltage_v"] == 230 and s["yearly_kwh"] >= 0
+            assert dict(catalog.spec_lines(s))["Rated current"].endswith(" A")
+    ac = catalog.specs("ac_15t_inv_5s")
+    assert ac["current_a"] == round(1650 / (230 * 0.97), 2) and ac["detector"] == "ac" and ac["star"] == 5
+    assert catalog.efficient_saving(ac) == 0 and catalog.efficient_saving(catalog.specs("ac_15t_split_3s")) > 0.1
+    assert catalog.specs("nope") is None
+
+
+def test_picked_appliances_carry_their_model_everywhere():
+    import catalog
+    from devices import appliance_specs, household_devices, household_ratings
+    from meter_source import scenario_ratings, with_habits
+    home = {"home_type": "Apartment", "appliances": [
+        catalog.item_for("ac", "ac_2t_inv_3s"), catalog.item_for("fridge", "fridge_ff_340"),
+        catalog.item_for("fan", "fan_bldc"), catalog.item_for("tv", "tv_32"), catalog.item_for("lights")]}
+    owned, switched, _ = household_devices(home)
+    assert owned == ("fridge", "ac")
+    assert {d["kind"] for d in switched} == {"fan", "tv", "light"}
+    fan = next(d for d in switched if d["kind"] == "fan")
+    assert fan["kw"] == 0.028 and fan["specs"]["label"].startswith("1200 mm, BLDC")
+    assert appliance_specs(home)["ac"]["model_id"] == "ac_2t_inv_3s"
+    assert household_ratings(home) == {"ac": 1.8, "fridge": 0.15}
+    assert scenario_ratings(with_habits("Typical summer home", home)) == {"ac": 1.8, "fridge": 0.15}
+    # a bigger AC model makes the simulated home use more
+    small = simulate_home(days=5, seed=4, ratings={**{k: 1.0 for k in APPLIANCE_KEYS}, "ac": 1.0})
+    big = simulate_home(days=5, seed=4, ratings={**{k: 1.0 for k in APPLIANCE_KEYS}, "ac": 1.8})
+    assert big["ac"].sum() > small["ac"].sum() * 1.5
+
+
+def test_every_home_type_gets_a_working_home():
+    from meter_source import TYPE_AREA, scenario_place, with_habits
+    from devices import household_devices
+    import catalog
+    items = [catalog.item_for("ac"), catalog.item_for("fridge"), catalog.item_for("tv")]
+    sizes = {}
+    for kind in ["Apartment", "Independent House", "Villa", "Studio", "Other"]:
+        home = {"home_type": kind, "appliances": items}
+        owned, switched, _ = household_devices(home)
+        assert owned == ("fridge", "ac") and len(switched) == 1
+        sizes[kind] = scenario_place(with_habits("Typical summer home", home))[1]
+    assert sizes["Studio"] < sizes["Apartment"] < sizes["Independent House"] < sizes["Villa"]
+    assert sizes["Other"] == 1000.0 and TYPE_AREA["Villa"] == sizes["Villa"]
+    # a size the user typed wins over the type's typical one
+    assert scenario_place(with_habits("Typical summer home", {"home_type": "Villa", "home_size": 900}))[1] == 900.0
+
+
+def test_tomorrow_and_usage_pattern(home):
+    from daily_brief import build_brief, tomorrow_outlook, usage_pattern
+    pred, tariff = home[0], home[1]
+    brief = build_brief(pred, APPLIANCE_KEYS, tariff)
+    t = tomorrow_outlook(pred, APPLIANCE_KEYS, tariff, brief)
+    last = pd.to_datetime(pred["datetime"]).dt.normalize().iloc[-1]
+    assert t["date"] == str((last + pd.Timedelta(days=1)).date()) and t["total_kwh"] > 0 and t["plan"]
+    assert abs(sum(a["kwh"] for a in t["appliances"]) - t["total_kwh"]) < t["total_kwh"]   # appliances are part of it
+    pattern = usage_pattern(pred, APPLIANCE_KEYS)
+    assert pattern.shape == (6, 24) and ((pattern >= 0) & (pattern <= 1)).all().all()
+    assert pattern.loc["Refrigerator"].mean() > 0.2                    # the compressor runs at every hour
+    assert pattern.loc["Water Heater (Geyser)"].idxmax() in range(5, 9)  # baths are in the morning
+
+
+def test_running_or_idle_minutes():
+    from home_ui import _switched_on
+    on = [0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1]
+    assert _switched_on(on, 3, False) == [0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1]   # a short rest is still "on"
+    assert _switched_on(on, 3, True) == [1] * len(on)                                  # always-on appliances
+
+
+def _plate_image(lines):
+    import io
+    from PIL import Image, ImageDraw, ImageFont
+    img = Image.new("RGB", (900, 70 + 60 * len(lines)), "white")
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", 34)
+    except OSError:
+        font = ImageFont.load_default()
+    for i, line in enumerate(lines):
+        draw.text((30, 30 + 60 * i), line, fill="black", font=font)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_rating_plate_is_read_from_a_photo():
+    from nameplate import parse_plate, read_plate
+    text, ok = read_plate(_plate_image(["REFRIGERATOR", "Model No: RT28K3", "Rated Voltage: 230V~ 50Hz",
+                                        "Rated Power: 150 W", "Rated Current: 0.8 A", "Capacity: 253 L", "3 Star"]))
+    if ok is False:
+        pytest.skip("Tesseract is not installed here")
+    figures = parse_plate(text)
+    assert figures["rated_w"] == 150 and figures["voltage_v"] == 230 and figures["current_a"] == 0.8
+    assert figures["star"] == 3 and figures["capacity"].startswith("253") and figures["frequency_hz"] == 50
+
+
+def test_plate_text_rules():
+    from nameplate import parse_plate
+    ac = parse_plate("Cooling Capacity 5200 W\nPower Consumption 1580 W\n230V 50Hz  7.2A  5 Star")
+    assert ac["rated_w"] == 1580 and ac["current_a"] == 7.2 and ac["star"] == 5     # cooling output is not the input
+    pump = parse_plate("WATER PUMP 1 HP 220-240V 50Hz 4.2A")
+    assert pump["voltage_text"] == "220-240 V" and pump["from_current"] and 700 < pump["rated_w"] < 900
+    assert parse_plate("Capacity: 15 Ltrs  Rated Power: 2kW  230V")["rated_w"] == 2000
+    assert parse_plate("1 HP 230V")["from_hp"] and parse_plate("")["lines"] == []
+
+
+def test_unknown_or_own_appliance_specifications(tmp_path, monkeypatch):
+    import catalog
+    import nameplate
+    old = catalog.item_for("fridge")
+    old.update(spec_mode="estimate", size="190 L", age_years=12)
+    est = catalog.effective_specs(old)
+    new = catalog.specs("fridge_sd_190")
+    assert est["source"] == "estimated" and est["running_w"] > new["running_w"] and est["star"] is None
+    assert catalog.efficient_saving(est) > 0.1
+    young = dict(old, age_years=0)
+    assert catalog.effective_specs(young)["running_w"] == new["running_w"]
+    own = catalog.item_for("ac")
+    own.update(spec_mode="own", photos=["p1"], own={"rated_w": 1580, "voltage_v": 230, "star": 5, "model_no": "AR18"})
+    spec = catalog.effective_specs(own)
+    assert spec["source"] == "rating plate" and spec["rated_w"] == 1580 and spec["detector"] == "ac"
+    assert abs(spec["current_a"] - 1580 / (230 * spec["power_factor"])) < 0.01 and catalog.efficient_saving(spec) == 0
+    custom = {"name": "Sewing machine", "type": "Other", "spec_mode": "own", "own": {"rated_w": 100}}
+    assert catalog.effective_specs(custom)["kind"] == "generic"
+    from devices import household_devices
+    owned, switched, _ = household_devices({"appliances": [own, custom]})
+    assert owned == ("ac",) and switched[0]["kw"] == 0.085
+    # photos are kept encrypted, per household
+    import integrity
+    monkeypatch.setattr(integrity, "KEY_FILE", str(tmp_path / "key"))
+    monkeypatch.setattr(nameplate, "PHOTO_DIR", str(tmp_path / "photos"))
+    pid = nameplate.store_photo("house-1", b"\x89PNG fake photo")
+    assert nameplate.load_photo("house-1", pid) == b"\x89PNG fake photo"
+    assert nameplate.load_photo("house-2", pid) is None
+    raw = open(nameplate._photo_path("house-1", pid), "rb").read()
+    assert b"fake photo" not in raw
+
+
+def test_web_look_up_reads_sources_and_keeps_what_agrees():
+    from spec_search import look_up
+    ddg = """<html><body>
+      <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fshop.example%2Fgl-b201">LG GL-B201 190 L</a>
+      <a class="result__a" href="https://www.youtube.com/watch?v=1">video</a>
+      <a class="result__a" href="https://review.example/lg-190">LG 190 L review</a>
+      <a class="result__a" href="https://other.example/specs">Specs</a></body></html>"""
+    pages = {
+        "https://shop.example/gl-b201": "<table><tr><th>Power Consumption</th><td>120 W</td></tr>"
+                                        "<tr><th>Voltage</th><td>230 V</td></tr><tr><th>Capacity</th><td>190 L</td></tr>"
+                                        "<tr><th>Energy rating</th><td>3 Star</td></tr></table>",
+        "https://review.example/lg-190": "<p>Rated power: 120 W. Works on 230V supply, 50 Hz.</p><p>3 star energy rating</p>",
+        "https://other.example/specs": "<div>Input power 135 W</div><div>Capacity 190 Litres</div>",
+    }
+    got = look_up("LG GL-B201", fetch_get=lambda url, **kw: pages.get(url), fetch_post=lambda url, data: ddg)
+    assert got["ok"] and len(got["sources"]) == 3 and all("youtube" not in s["url"] for s in got["sources"])
+    assert got["figures"]["rated_w"] == 120 and got["agree"]["rated_w"] == 2      # two of three agree
+    assert got["figures"]["star"] == 3 and got["figures"]["voltage_v"] == 230
+    # nothing reachable: says so instead of inventing figures
+    offline = look_up("anything", fetch_get=lambda url, **kw: None, fetch_post=lambda url, data: None)
+    assert not offline["ok"] and offline["figures"] == {}
+
+
+def test_dropped_photo_is_recognised():
+    from appliance_manager import guess_type
+    assert guess_type("SPLIT AIR CONDITIONER Cooling capacity 5200 W", {}) == "ac"
+    assert guess_type("Monoblock pump 1 HP head 30 m", {}) == "water_pump"
+    assert guess_type("FROST FREE REFRIGERATOR 340 L", {}) == "fridge"
+    assert guess_type("Model XJ-200 230V", {"capacity": "15 L", "rated_w": 2000}) == "geyser"
+    assert guess_type("Model XJ-200 230V", {"capacity": "7 kg"}) == "washing_machine"
+    assert guess_type("nothing useful", {}) == ""
