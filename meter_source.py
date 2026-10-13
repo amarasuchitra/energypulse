@@ -79,7 +79,8 @@ def habits_key(home_details: Optional[dict]) -> str:
             continue
         key = detected_key(str(item.get("name", "")))
         if key and key not in levels:
-            levels[key] = USAGE_FACTOR.get(item.get("usage", "Medium"), 1.0)
+            from home_config import usage_factor          # hours a day and quantity, or the usage level
+            levels[key] = usage_factor(item)
     parts = ",".join(f"{k}={v}" for k, v in sorted(levels.items()) if v != 1.0)
     try:
         people = int(hd.get("occupants", 4) or 4)

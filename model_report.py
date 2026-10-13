@@ -31,6 +31,41 @@ def render(meta: dict) -> str:
     table = "\n".join(
         f"| {name} | {v:.3f} | {_pct(v, mae['persistence']):+.1f}% |" if v is not None else f"| {name} | n/a | |"
         for name, v in rows)
+    names = {"hybrid_xgboost_lstm": "Hybrid (XGBoost + LSTM)", "xgboost": "XGBoost", "lstm": "LSTM",
+             "random_forest": "Random forest", "linear_ridge": "Linear (ridge) regression",
+             "baseline_persistence": "Baseline: next hour = this hour",
+             "baseline_same_hour_mean_7_days": "Baseline: mean of same hour, last 7 days"}
+
+    def score_table(comp):
+        return "\n".join(f"| {names.get(k, k)} | {v['mae_kw']:.3f} | {v['rmse_kw']:.3f} | {v['r2']:.3f} |"
+                         for k, v in comp.items() if v)
+    comparison = score_table(h.get("comparison", {})) or "| (not recorded in this training run) | | | |"
+    sim = meta.get("simulated_meter")
+    if sim:
+        sc = sim["comparison"]
+        sim_section = f"""## Simulated meter: next-hour model
+
+The live dashboard reads a **simulated** smart meter (an Indian home built from the user's own appliance
+list), not a physical meter. The UCI model above does not transfer to it, so it has its own model:
+XGBoost on power-only features (the same lags, same-hour history and rolling statistics; no sub-meter
+readings), trained on {sim['homes']['train']} simulated homes, early-stopped on {sim['homes']['validation']}
+other homes and tested on {sim['homes']['test']} homes it never saw (different appliances, habits, sizes,
+cities and seasons; {sim['test_hours']:,} test hours, mean {sim['test_mean_kw']:.2f} kW).
+
+| Model (unseen simulated homes) | MAE (kW) | RMSE (kW) | R² |
+|---|---|---|---|
+{score_table(sc)}
+
+- **{sim['improvement_over_best_baseline_pct']:.0f}% lower error** than the better of the two baselines.
+- 90% range coverage on the test homes: **{sim['interval']['test_coverage']:.1%}** (target 90%; calibrated on the
+  validation homes, so new homes come out slightly below target), average width {sim['interval']['mean_width_kw']:.2f} kW.
+- These are results on simulated data. They show the model learns the simulator's patterns; they are not
+  a measurement of accuracy on a real home's meter.
+- The dashboard logs each forecast before its hour happens and fills in the actual afterwards
+  (`forecast_log` table), so live accuracy and overconsumption alerts use the forecast that was really made.
+"""
+    else:
+        sim_section = ""
     versions = ", ".join(f"{k} {v}" for k, v in meta.get("versions", {}).items())
     return f"""# EnergyPulse forecasting: model report
 
@@ -67,11 +102,21 @@ XGBoost is trained on absolute error; the LSTM reads the last 48 hours.
 - Models trained on the training period only scored {h['hybrid_mae_train_only_models_kw']:.3f} kW on the same test
   hours; refitting on train + validation gave {mae['hybrid']:.3f} kW.
 
+All models, same test hours (R² is the share of hour-to-hour variation explained):
+
+| Model | MAE (kW) | RMSE (kW) | R² |
+|---|---|---|---|
+{comparison}
+
+Random forest and ridge regression use the same features and training data; they are recorded for
+comparison and are not used by the app.
+
 Hourly household use is noisy (an appliance switching on changes the hour by kilowatts), so a
 next-hour error of about {mae['hybrid']:.2f} kW is close to what the readings allow. The fair comparison is the
 baseline: the forecast is **{h['improvement_over_persistence_pct']:.0f}% more accurate** than assuming the next hour
 repeats this one.
 
+{sim_section}
 ## Bill forecast (energy over the next 30 days)
 
 A gradient-boosted model forecasts each of the next 62 days from the last 90 days of daily energy
@@ -94,17 +139,21 @@ model, because this home's seasons (French winter heating) say nothing about ano
 - For each shiftable appliance run, every allowed start time (15-minute steps) is costed against the
   time-of-day tariff, within the household's limits (quiet hours, allowed hours, how far ahead a geyser
   may heat).
-- Appliances are planned together, biggest saving first: each accepted move is added to the day's
-  load (90th percentile of everything else), and a time is offered only if the home stays under
-  85% of its sanctioned load.
+- Appliances are planned together, biggest saving first, against each past day's actual load: a run is
+  moved only to a time where the home would have stayed under 85% of its sanctioned load on that day,
+  and each accepted move is added to that day's load before the next is planned.
+- Every plan is re-checked (`scheduler.validate_plan`): baseline vs optimised energy, cost and peak, and
+  every moved run against allowed hours, quiet hours, how far ahead it may run and the load cap. Moving a
+  run saves money, not energy; energy savings from the efficiency tips are estimates from BEE guidance
+  and are labelled as such.
 - Moves that are each too small to mention are offered together when they add up.
 - On a flat tariff no timing advice is given, because moving use saves nothing.
 
 ## Limits
 
 - One household, recorded 2006-2010, in France. Accuracy on other homes will differ; the app says so.
-- The simulated meter used for appliance-level views and the daily brief is a simulation; its own
-  forecast was backtested on simulated homes (about 11% daily error) and is labelled as simulated.
+- The live meter is simulated; its next-hour and daily figures are evaluated on simulated homes only
+  (daily brief backtest: about 11% daily error) and the app labels them as simulated.
 
 Software: {versions}. Training took {meta['training_seconds']} s.
 """

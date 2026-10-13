@@ -43,6 +43,11 @@ class Forecaster:
         power = self.meta.get("power_only", {})
         self.power_features = power.get("features", [])
         self.power_offset = float(power.get("interval_offset_kw", 0.0))
+        # Model for the app's simulated meter (trained on simulated homes; see sim_dataset.py).
+        self.xgb_sim = self.q05_sim = self.q95_sim = None
+        sim = self.meta.get("simulated_meter", {})
+        self.sim_features = sim.get("features", [])
+        self.sim_offset = float(sim.get("interval_offset_kw", 0.0))
         self._lstm_tried = lstm is not None
 
     @property
@@ -108,6 +113,9 @@ class Forecaster:
                  xgb_power=xgb_power,
                  q05_power=unpickle("forecast_q05_power.pkl") if xgb_power is not None else None,
                  q95_power=unpickle("forecast_q95_power.pkl") if xgb_power is not None else None)
+        if os.path.exists(path("forecast_xgb_sim.json")):
+            fc.xgb_sim = booster("forecast_xgb_sim.json")
+            fc.q05_sim, fc.q95_sim = unpickle("forecast_q05_sim.pkl"), unpickle("forecast_q95_sim.pkl")
         if not use_lstm:
             fc._lstm_tried = True
         return fc
@@ -221,6 +229,61 @@ class Forecaster:
         out["day"] = out["datetime"].dt.date
         out["hour"] = out["datetime"].dt.hour
         return out
+
+
+# ---------------------------------------------------------------- simulated meter
+def _sim_ready(fc: "Forecaster") -> bool:
+    return fc.xgb_sim is not None and bool(fc.sim_features)
+
+
+def meter_hour_forecasts(fc: "Forecaster", hourly: pd.DataFrame) -> pd.DataFrame:
+    """
+    One-step forecasts for every hour of a simulated-meter series.
+
+    `hourly`: datetime + Global_active_power (hourly mean kW, completed hours only).
+    Returns one row per forecast hour: target_hour, predicted_kw, lower_kw, upper_kw.
+    Each forecast uses only the hours BEFORE its target hour, exactly as it would
+    have been made at the time, so it can be compared with what then happened.
+    One model call covers all hours.
+    """
+    if not _sim_ready(fc) or hourly is None or hourly.empty:
+        return pd.DataFrame(columns=["target_hour", "predicted_kw", "lower_kw", "upper_kw"])
+    h = to_hourly(hourly)
+    X = hourly_features(h).reindex(columns=fc.sim_features)
+    ok = h[TARGET].notna().to_numpy()
+    X = X[ok]
+    if X.empty:
+        return pd.DataFrame(columns=["target_hour", "predicted_kw", "lower_kw", "upper_kw"])
+    pred = np.maximum(fc.xgb_sim.predict(X), 0.0)
+    out = pd.DataFrame({"target_hour": X.index + pd.Timedelta(hours=1), "predicted_kw": pred})
+    if fc.q05_sim is not None and fc.q95_sim is not None:
+        a, b = fc.q05_sim.predict(X), fc.q95_sim.predict(X)
+        out["lower_kw"] = np.maximum(0.0, np.minimum(a, b) - fc.sim_offset)
+        out["upper_kw"] = np.maximum(np.maximum(a, b) + fc.sim_offset, pred)
+        out["lower_kw"] = np.minimum(out["lower_kw"], pred)
+    else:
+        out["lower_kw"] = out["upper_kw"] = np.nan
+    return out.reset_index(drop=True)
+
+
+def meter_upcoming(fc: "Forecaster", hourly: pd.DataFrame, steps: int = 2) -> pd.DataFrame:
+    """
+    Forecasts for the hours after the last completed hour (the one in progress,
+    then the next), each step feeding the previous forecast in as if observed.
+    """
+    rows = []
+    if not _sim_ready(fc) or hourly is None or hourly.empty:
+        return pd.DataFrame(rows, columns=["target_hour", "predicted_kw", "lower_kw", "upper_kw"])
+    h = to_hourly(hourly).iloc[-24 * 10:].copy()
+    for _ in range(steps):
+        one = meter_hour_forecasts(fc, h.reset_index())
+        if one.empty:
+            break
+        last = one.iloc[-1]
+        rows.append(last.to_dict())
+        h.loc[last["target_hour"], TARGET] = last["predicted_kw"]
+        h = h.sort_index()
+    return pd.DataFrame(rows, columns=["target_hour", "predicted_kw", "lower_kw", "upper_kw"])
 
 
 def month_slice(forecast: pd.DataFrame, year: int, month: int) -> pd.DataFrame:

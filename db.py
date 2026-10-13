@@ -175,6 +175,67 @@ class DatabaseManager:
 
             conn.commit()
 
+    # ────────────── FORECAST LOG (predicted vs actual, per household and hour) ──
+    def _ensure_forecast_log(self, cursor) -> None:
+        cursor.execute("""CREATE TABLE IF NOT EXISTS forecast_log (
+            household_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            target_hour TEXT NOT NULL,
+            predicted_kwh REAL NOT NULL,
+            lower_kwh REAL,
+            upper_kwh REAL,
+            actual_kwh REAL,
+            model TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (household_id, source, target_hour))""")
+
+    def log_forecasts(self, household_id: str, source: str, rows, model: str = "") -> int:
+        """
+        Store forecasts; an hour already forecast keeps its first forecast (made
+        before the hour happened), so nothing is ever logged twice.
+        rows: iterable of (target_hour, predicted_kwh, lower_kwh, upper_kwh).
+        """
+        data = [(household_id, source, pd.Timestamp(t).strftime("%Y-%m-%d %H:%M"), float(p),
+                 None if lo is None or pd.isna(lo) else float(lo),
+                 None if hi is None or pd.isna(hi) else float(hi), model) for t, p, lo, hi in rows]
+        if not data:
+            return 0
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._ensure_forecast_log(cursor)
+            before = conn.total_changes
+            cursor.executemany("""INSERT OR IGNORE INTO forecast_log
+                (household_id, source, target_hour, predicted_kwh, lower_kwh, upper_kwh, model)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""", data)
+            return conn.total_changes - before
+
+    def record_actuals(self, household_id: str, source: str, rows) -> int:
+        """Fill in what was actually used for hours that have finished. rows: (target_hour, actual_kwh)."""
+        data = [(float(a), household_id, source, pd.Timestamp(t).strftime("%Y-%m-%d %H:%M")) for t, a in rows]
+        if not data:
+            return 0
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._ensure_forecast_log(cursor)
+            before = conn.total_changes
+            cursor.executemany("""UPDATE forecast_log SET actual_kwh = ?
+                WHERE household_id = ? AND source = ? AND target_hour = ? AND actual_kwh IS NULL""", data)
+            return conn.total_changes - before
+
+    def forecast_log(self, household_id: str, source: str, since=None) -> pd.DataFrame:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            self._ensure_forecast_log(cursor)
+            query = "SELECT * FROM forecast_log WHERE household_id = ? AND source = ?"
+            args = [household_id, source]
+            if since is not None:
+                query += " AND target_hour >= ?"
+                args.append(pd.Timestamp(since).strftime("%Y-%m-%d %H:%M"))
+            df = pd.read_sql_query(query + " ORDER BY target_hour", conn, params=args)
+        if not df.empty:
+            df["target_hour"] = pd.to_datetime(df["target_hour"])
+        return df
+
     # ────────────── REMOVING A HOUSEHOLD (guest sign-out, stale guests) ────────
     def delete_household(self, household_id: str, email: Optional[str] = None,
                          remove_files: bool = True) -> int:
@@ -269,7 +330,15 @@ class DatabaseManager:
                            (household_id, key, json.dumps(value)))
 
     # ────────────── HOME SETUP (so a returning user lands on their own home) ─────
-    def save_home_details(self, household_id: str, details: Dict[str, Any]) -> None:
+    def save_home_details(self, household_id: str, details: Dict[str, Any]) -> List[str]:
+        """
+        Store this household's setup (validated first; see home_config.py).
+        Returns the problems that were corrected; raises InvalidSetup if unusable.
+        """
+        from home_config import validate_home_details
+        if not household_id:
+            raise ValueError("No household to save the setup for.")
+        details, problems = validate_home_details(details)
         with self.get_connection() as conn:
             conn.cursor().execute("""
                 INSERT INTO household_homes (household_id, details_json, updated_at)
@@ -277,6 +346,7 @@ class DatabaseManager:
                 ON CONFLICT(household_id) DO UPDATE SET
                     details_json = excluded.details_json, updated_at = CURRENT_TIMESTAMP
             """, (household_id, json.dumps(details)))
+        return problems
 
     def get_home_details(self, household_id: str) -> Optional[Dict[str, Any]]:
         with self.get_connection() as conn:

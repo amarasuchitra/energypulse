@@ -1,5 +1,5 @@
 {
-  "created": "2026-10-14T00:33:54",
+  "created": "2026-10-14T01:33:35",
   "split": {
     "train_until": "2009-06-19 12:00:00",
     "validation_until": "2010-02-05 02:00:00",
@@ -143,6 +143,43 @@
       "test_coverage": 0.9003,
       "mean_width_kw": 1.3818,
       "conformal_offset_kw": 0.00996
+    },
+    "comparison": {
+      "hybrid_xgboost_lstm": {
+        "mae_kw": 0.2855,
+        "rmse_kw": 0.4452,
+        "r2": 0.6417
+      },
+      "xgboost": {
+        "mae_kw": 0.2876,
+        "rmse_kw": 0.4477,
+        "r2": 0.6376
+      },
+      "lstm": {
+        "mae_kw": 0.3087,
+        "rmse_kw": 0.4775,
+        "r2": 0.5905
+      },
+      "random_forest": {
+        "mae_kw": 0.3148,
+        "rmse_kw": 0.4593,
+        "r2": 0.6187
+      },
+      "linear_ridge": {
+        "mae_kw": 0.3535,
+        "rmse_kw": 0.4953,
+        "r2": 0.5565
+      },
+      "baseline_persistence": {
+        "mae_kw": 0.3968,
+        "rmse_kw": 0.6027,
+        "r2": 0.3435
+      },
+      "baseline_same_hour_mean_7_days": {
+        "mae_kw": 0.4454,
+        "rmse_kw": 0.624,
+        "r2": 0.2961
+      }
     }
   },
   "power_only": {
@@ -225,6 +262,118 @@
       "mean_width_kw": 1.4716
     }
   },
+  "simulated_meter": {
+    "features": [
+      "lag_0",
+      "lag_1",
+      "lag_2",
+      "lag_3",
+      "lag_4",
+      "lag_5",
+      "lag_6",
+      "lag_7",
+      "lag_8",
+      "lag_9",
+      "lag_10",
+      "lag_11",
+      "lag_12",
+      "lag_13",
+      "lag_14",
+      "lag_15",
+      "lag_16",
+      "lag_17",
+      "lag_18",
+      "lag_19",
+      "lag_20",
+      "lag_21",
+      "lag_22",
+      "lag_23",
+      "lag_47",
+      "lag_71",
+      "lag_95",
+      "lag_119",
+      "lag_143",
+      "lag_167",
+      "same_hour_d1",
+      "same_hour_d2",
+      "same_hour_d3",
+      "same_hour_d4",
+      "same_hour_d5",
+      "same_hour_d6",
+      "same_hour_d7",
+      "same_hour_mean7",
+      "mean_3",
+      "std_3",
+      "max_3",
+      "min_3",
+      "mean_6",
+      "std_6",
+      "max_6",
+      "min_6",
+      "mean_12",
+      "std_12",
+      "max_12",
+      "min_12",
+      "mean_24",
+      "std_24",
+      "max_24",
+      "min_24",
+      "mean_72",
+      "std_72",
+      "mean_168",
+      "std_168",
+      "ewm_3",
+      "ewm_12",
+      "diff_1",
+      "diff_24",
+      "hour",
+      "dow",
+      "is_weekend",
+      "hour_sin",
+      "hour_cos",
+      "dow_sin",
+      "dow_cos"
+    ],
+    "interval_offset_kw": 0.005996834514199879,
+    "homes": {
+      "train": 80,
+      "validation": 20,
+      "test": 30
+    },
+    "test_hours": 38130,
+    "test_mean_kw": 0.4936,
+    "comparison": {
+      "xgboost": {
+        "mae_kw": 0.1092,
+        "rmse_kw": 0.2102,
+        "r2": 0.7438
+      },
+      "baseline_persistence": {
+        "mae_kw": 0.1825,
+        "rmse_kw": 0.3301,
+        "r2": 0.3677
+      },
+      "baseline_same_hour_mean_7_days": {
+        "mae_kw": 0.1655,
+        "rmse_kw": 0.2747,
+        "r2": 0.5621
+      }
+    },
+    "interval": {
+      "test_coverage": 0.8824,
+      "mean_width_kw": 0.4699
+    },
+    "xgb_params": {
+      "max_depth": 7,
+      "learning_rate": 0.02,
+      "min_child_weight": 30,
+      "subsample": 0.7,
+      "colsample_bytree": 0.6,
+      "reg_lambda": 5.0,
+      "n_estimators": 3988
+    },
+    "improvement_over_best_baseline_pct": 34.0
+  },
   "daily": {
     "daily_seasonal": {
       "features": [
@@ -303,5 +452,5 @@
     "xgboost": "3.2.0",
     "tensorflow": "2.21.0"
   },
-  "training_seconds": 756
+  "training_seconds": 1065
 }

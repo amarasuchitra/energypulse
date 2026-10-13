@@ -35,6 +35,9 @@ from optimize import detect_anomalies, generate_anomaly_tips, calendar_tips, wha
 from model import load_data
 from forecast_features import TARGET
 from forecast import Forecaster, month_slice
+from ep_log import get_logger
+
+log = get_logger("app")
 from data import (
     CLEAN_CSV, remap_to_current_dates, shift_forecast_to_current_dates,
     SAMPLE_META_PATH,
@@ -816,7 +819,7 @@ def build_forecast_df(source, raw_data):
     try:
         return _upload_forecast(signature, data)
     except Exception as exc:
-        print(f"Bill forecast unavailable: {exc}")
+        log.warning("Bill forecast unavailable: %s", exc)
         return pd.DataFrame()
 
 
@@ -902,7 +905,7 @@ def sign_out():
         try:
             get_accounts().revoke_token(auth_state["token"])
         except Exception as exc:
-            print(f"Token revoke failed: {exc}")
+            log.warning("Token revoke failed: %s", type(exc).__name__)
         st.session_state["_clear_cookie"] = True
     st.session_state["_cookie_checked"] = True       # never sign straight back in after logging out
     # A guest home is not kept: remove everything it stored.
@@ -913,7 +916,7 @@ def sign_out():
             if user:
                 get_db().delete_household(user["household_id"], guest_email)
         except Exception as exc:
-            print(f"Guest cleanup failed: {exc}")
+            log.warning("Guest cleanup failed: %s", exc)
     for k in ["auth", "home_details", "simulator", "onboard_data", "onboard_step", "sidebar_settings",
               "page", "bills", "bill_seen", "home_state", "nilm_dismissed", "data_upload", "ensemble_setting",
               "data_upload_sig", "data_upload_error", "data_api", "sanctioned_kw"]:
@@ -1645,7 +1648,7 @@ def todays_brief(tariff_rate, owned, household_id, user_name, user_email):
     return brief
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=8)
 def _now_cached(date, scenario, owned, rate, tod, minute):
     from daily_brief import right_now
     return right_now(detected_history(date, scenario, owned), owned, Tariff(rate=rate, tod_enabled=tod), minute)
@@ -1694,51 +1697,169 @@ def render_tomorrow_section(tariff_rate, owned):
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
 
-def render_now_section(tariff_rate, owned):
-    """The simulated meter at this minute: the same source as the Home page and the forecast."""
-    try:                                   # keep "right now" in step with the clock
-        from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=60_000, key="now_autorefresh")
-    except ImportError:
-        pass
+@st.cache_data(show_spinner=False, max_entries=16)
+def _meter_forecast_cached(date, scenario, owned, hour):
+    """
+    The next-hour model on the simulated meter, run once per clock hour: forecasts
+    for the hour in progress and the next one, from the finished hours before them.
+    """
+    from forecast import meter_upcoming
+    from sim_dataset import minute_to_hourly
+    pred = detected_history(date, scenario, owned)
+    cutoff = pd.Timestamp(date) + pd.Timedelta(hours=int(hour))
+    hourly = minute_to_hourly(pred[pd.to_datetime(pred["datetime"]) < cutoff]).dropna()
+    upcoming = meter_upcoming(load_forecaster(), hourly, steps=2)
+    log.info("Meter forecast for %s %02d:00 from %d finished hours: %s", date, int(hour), len(hourly),
+             [round(float(v), 3) for v in upcoming.get("predicted_kw", [])])
+    return upcoming
+
+
+def _meter_now_ts(date) -> pd.Timestamp:
+    return pd.Timestamp(date) + pd.Timedelta(minutes=now_minute())
+
+
+def run_meter_monitoring(household_id, owned, people, scenario, date):
+    """Log the meter forecasts, record finished hours and check for overconsumption (once per hour)."""
+    import monitoring
+    hour = now_minute() // 60
+    mark = (household_id, date, scenario, tuple(owned), hour)
+    if st.session_state.get("_monitor_mark") == mark:
+        return st.session_state.get("_monitor_result")
+    try:
+        res = monitoring.run_check(get_db(), load_forecaster(), household_id, detected_history(date, scenario, owned),
+                                   _meter_now_ts(date), owned, people=people, service=get_notification_service(),
+                                   language=st.session_state.get("lang", "en"))
+        log.info("Monitoring %s: logged %d forecasts, filled %d hours, status %s%s", household_id, res["logged"],
+                 res["filled"], res["result"]["status"], ", ALERT" if res["alert"] else "")
+    except Exception:
+        log.exception("Monitoring failed for %s", household_id)
+        res = {"error": True}
+    st.session_state["_monitor_mark"], st.session_state["_monitor_result"] = mark, res
+    if res.get("alert"):
+        notify("warning", res["alert"]["subject"] + ". Details are on the Dashboard.")
+    return res
+
+
+def render_overuse_banner(household_id):
+    """The latest overconsumption alert of the last 24 hours, with its figures."""
+    import monitoring
+    try:
+        entry = monitoring.latest_alert(get_db(), household_id)
+        state = get_db().get_store(household_id, monitoring.STATE_KEY) or {}
+    except Exception:
+        log.exception("Could not read alerts for %s", household_id)
+        return
+    if not entry:
+        return
+    sent = pd.Timestamp(entry.get("sent_at")) if entry.get("sent_at") else None
+    if sent is not None and pd.Timestamp.utcnow().tz_localize(None) - sent > pd.Timedelta(hours=24):
+        return
+    ongoing = bool(state.get("open"))
+    delivered = {"sent": "Emailed to the household.", "failed": "Email could not be sent; shown here.",
+                 "in-app": "Shown here (email is not set up)."}.get(entry.get("status"), "")
+    box = st.warning if ongoing else st.info
+    box(f"**{entry.get('subject', 'High energy use')}{'' if ongoing else ' (back to normal now)'}**  \n"
+        f"{entry.get('body_text', '')}  \n<small>{delivered}</small>", icon="⚡" if ongoing else "ℹ️")
+
+
+def render_now_section(tariff_rate, owned, household_id=None, people=None):
+    """
+    The simulated meter, refreshed at three speeds:
+      every second  the live tile (clock and the reading for this minute; cached, no model)
+      every minute  today's chart and cost so far
+      every hour    the next-hour forecast and the overconsumption check (and a full refresh)
+    """
     scenario, tod = meter_settings()
-    minute = now_minute()
-    now = _now_cached(today_str(), scenario, tuple(owned), float(tariff_rate), tod, minute)
-    section(f"Right now, {local_now():%a %d %b, %H:%M}")
-    c1, c2, c3, c4 = st.columns(4)
-    metric_card(c1, label="Load now", value=f"{now['kw']:.2f}", unit="kW",
-                sub=("running: " + ", ".join(now["running"])) if now["running"] else "no large appliance running")
-    metric_card(c2, label="Next hour, usually", value=f"{now['next_kw']:.2f}", unit="kW",
-                sub=f"between {now['next_lo']:.2f} and {now['next_hi']:.2f} on the last {now['next_days']} days")
-    metric_card(c3, label="Today so far", value=f"Rs. {now['cost']:.0f}",
-                sub=f"{now['kwh']:.1f} units; {now['period'].lower()} rate Rs. {now['rate']:.2f}")
-    change = now["week_change"]
-    metric_card(c4, label="Last 7 days", value=f"Rs. {now['week_cost']:.0f}",
-                sub=f"{now['week_kwh']:.0f} units",
-                trend_text="" if change is None else f"{change:+.0f}% on the week before",
-                trend_dir="neutral" if change is None or abs(change) < 2 else ("up" if change > 0 else "down"))
+    date = today_str()
+    hour = now_minute() // 60
+    if household_id:
+        run_meter_monitoring(household_id, tuple(owned), people or [], scenario, date)
+        render_overuse_banner(household_id)
+    try:
+        upcoming = _meter_forecast_cached(date, scenario, tuple(owned), hour)
+    except Exception:
+        log.exception("Meter forecast failed")
+        upcoming = pd.DataFrame()
+    fc_meta = load_forecaster().meta.get("simulated_meter", {})
+
+    @st.fragment(run_every=1)
+    def live_tile():
+        if now_minute() // 60 != hour or today_str() != date:
+            st.rerun(scope="app")                         # a new hour: new forecast and alert check
+        minute = now_minute()
+        now = _now_cached(today_str(), scenario, tuple(owned), float(tariff_rate), tod, minute)
+        section(f"Right now, {local_now():%a %d %b, %H:%M:%S}")
+        c1, c2, c3, c4 = st.columns(4)
+        metric_card(c1, label="Load now", value=f"{now['kw']:.2f}", unit="kW",
+                    sub=(("running: " + ", ".join(now["running"])) if now["running"] else "no large appliance running")
+                    + f" · reading for {minute // 60:02d}:{minute % 60:02d}")
+        if not upcoming.empty:
+            nxt = upcoming.iloc[-1]
+            t0 = pd.Timestamp(nxt["target_hour"])
+            band = (f"90% range {nxt['lower_kw']:.2f}-{nxt['upper_kw']:.2f}" if pd.notna(nxt.get("lower_kw")) else "")
+            metric_card(c2, label=f"Forecast {t0:%H:%M}-{t0 + pd.Timedelta(hours=1):%H:%M}",
+                        value=f"{nxt['predicted_kw']:.2f}", unit="kWh",
+                        sub=f"{band} · made at {hour:02d}:00 · usual {now['next_kw']:.2f}")
+        else:
+            metric_card(c2, label="Next hour, usually", value=f"{now['next_kw']:.2f}", unit="kW",
+                        sub=f"between {now['next_lo']:.2f} and {now['next_hi']:.2f} on the last {now['next_days']} days")
+        metric_card(c3, label="Today so far", value=f"Rs. {now['cost']:.0f}",
+                    sub=f"{now['kwh']:.1f} units; {now['period'].lower()} rate Rs. {now['rate']:.2f}")
+        change = now["week_change"]
+        metric_card(c4, label="Last 7 days", value=f"Rs. {now['week_cost']:.0f}",
+                    sub=f"{now['week_kwh']:.0f} units",
+                    trend_text="" if change is None else f"{change:+.0f}% on the week before",
+                    trend_dir="neutral" if change is None or abs(change) < 2 else ("up" if change > 0 else "down"))
+
+    live_tile()
+    if not upcoming.empty and fc_meta:
+        comp = fc_meta.get("comparison", {})
+        st.caption(
+            f"Forecast by an XGBoost model trained on {fc_meta.get('homes', {}).get('train', 0)} simulated homes and tested on "
+            f"{fc_meta.get('homes', {}).get('test', 0)} others it never saw: average error "
+            f"{comp.get('xgboost', {}).get('mae_kw', 0):.2f} kWh per hour, "
+            f"{fc_meta.get('improvement_over_best_baseline_pct', 0):.0f}% lower than the usual-for-this-hour average. "
+            "Updated every hour; the live tile every second.")
     st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
-    with st.container(border=True):
-        section("Today on the meter")
-        base_day = pd.Timestamp(today_str())
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=[base_day + pd.Timedelta(minutes=i) for i in range(0, len(now["typical"]), 5)],
-            y=now["typical"][::5], mode="lines", name="A usual day (average of the last month)",
-            line=dict(color=tc("faint"), width=1.2, dash="dot"),
-            hovertemplate="%{x|%H:%M}<br>%{y:.2f} kW usually<extra></extra>"))
-        fig.add_trace(go.Scatter(
-            x=[base_day + pd.Timedelta(minutes=i) for i in range(len(now["trace"]))], y=now["trace"],
-            mode="lines", name="Today so far", line=dict(color=ACCENT, width=1.8),
-            fill="tozeroy", fillcolor="rgba(245,168,60,0.10)",
-            hovertemplate="%{x|%H:%M}<br>%{y:.2f} kW<extra></extra>"))
-        fig.update_layout(**PLOTLY_LAYOUT(
-            height=300, yaxis_title="kW", showlegend=True, margin=dict(l=40, r=20, t=10, b=30),
-            xaxis=dict(range=[base_day, base_day + pd.Timedelta(days=1)], tickformat="%H:%M"),
-            legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1)))
-        st.plotly_chart(fig, width="stretch", key="overview_today")
-        st.caption("Simulated main-meter reading up to this minute. The rest of today is not known yet, "
-                   "so it is not drawn. This page updates every minute.")
+
+    @st.fragment(run_every=60)
+    def today_chart():
+        minute = now_minute()
+        now = _now_cached(today_str(), scenario, tuple(owned), float(tariff_rate), tod, minute)
+        with st.container(border=True):
+            section("Today on the meter")
+            base_day = pd.Timestamp(today_str())
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=[base_day + pd.Timedelta(minutes=i) for i in range(0, len(now["typical"]), 5)],
+                y=now["typical"][::5], mode="lines", name="A usual day (average of the last month)",
+                line=dict(color=tc("faint"), width=1.2, dash="dot"),
+                hovertemplate="%{x|%H:%M}<br>%{y:.2f} kW usually<extra></extra>"))
+            fig.add_trace(go.Scatter(
+                x=[base_day + pd.Timedelta(minutes=i) for i in range(len(now["trace"]))], y=now["trace"],
+                mode="lines", name="Today so far", line=dict(color=ACCENT, width=1.8),
+                fill="tozeroy", fillcolor="rgba(245,168,60,0.10)",
+                hovertemplate="%{x|%H:%M}<br>%{y:.2f} kW<extra></extra>"))
+            if not upcoming.empty:
+                fig.add_trace(go.Scatter(
+                    x=[pd.Timestamp(t) + pd.Timedelta(minutes=30) for t in upcoming["target_hour"]],
+                    y=upcoming["predicted_kw"], mode="markers", name="Forecast (hourly average)",
+                    marker=dict(color=ACCENT, size=9, symbol="diamond"),
+                    error_y=dict(type="data", symmetric=False,
+                                 array=(upcoming["upper_kw"] - upcoming["predicted_kw"]).fillna(0),
+                                 arrayminus=(upcoming["predicted_kw"] - upcoming["lower_kw"]).fillna(0),
+                                 color=ACCENT, thickness=1.2, width=5),
+                    hovertemplate="%{x|%H:00}<br>%{y:.2f} kW forecast<extra></extra>"))
+            fig.update_layout(**PLOTLY_LAYOUT(
+                height=300, yaxis_title="kW", showlegend=True, margin=dict(l=40, r=20, t=10, b=30),
+                xaxis=dict(range=[base_day, base_day + pd.Timedelta(days=1)], tickformat="%H:%M"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1)))
+            st.plotly_chart(fig, width="stretch", key="overview_today")
+            st.caption(f"Simulated main-meter reading up to {minute // 60:02d}:{minute % 60:02d}. The rest of today "
+                       "is not known yet, so it is not drawn; the diamonds are the model's forecast. "
+                       "This chart updates every minute.")
+
+    today_chart()
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
 
@@ -1879,53 +2000,93 @@ def render_sidebar():
 
 
 def _render_appliances_editor(hd: dict, lang: str) -> None:
-    """Inline appliance editor for Settings page - add/edit/remove without full onboarding."""
-    from appliance_manager import _save
+    """
+    Edit the household's appliances: add, remove, quantity, hours a day, usage.
+    Changes go into a draft; "Save changes" validates and writes them to the
+    database (the authoritative copy) and "Cancel" drops the draft.
+    """
     import catalog
+    from home_config import InvalidSetup, typical_hours, validate_home_details
     db = get_db()
     household_id = current_household_id()
-    items = hd.setdefault("appliances", [])
-    
-    if not items:
+    saved_items = hd.get("appliances", []) or []
+    draft = st.session_state.get("appl_draft")
+    if draft is None or st.session_state.get("appl_draft_for") != household_id:
+        draft = [dict(i) if isinstance(i, dict) else {"name": str(i), "type": "Other", "usage": "Medium"}
+                 for i in saved_items]
+        st.session_state["appl_draft"], st.session_state["appl_draft_for"] = draft, household_id
+
+    if not draft:
         st.caption("No appliances yet. Add one below.")
-    
-    for i, item in enumerate(list(items)):
-        if not isinstance(item, dict):
-            item = items[i] = {"name": str(item), "type": "Other", "usage": "Medium"}
+    for i, item in enumerate(list(draft)):
         spec = catalog.effective_specs(item)
         summary = f"{spec['label']} · {spec['rated_w']:.0f} W" if spec else item.get("type", "Unknown")
-        
-        c1, c2, c3 = st.columns([3, 1.5, 1])
-        c1.markdown(f"**{item['name']}**  \n<small>{summary}</small>", unsafe_allow_html=True)
-        item["usage"] = c2.select_slider("Usage", ["Low", "Medium", "High"], 
-                                         value=item.get("usage", "Medium"), key=f"sb_use_{i}")
-        if c3.button("🗑️", key=f"sb_del_{i}", help="Remove appliance", width="stretch",
-                     disabled=len(items) <= 1):
-            items.pop(i)
-            _save(db, household_id)
+        st.markdown(f"**{item['name']}**  \n<small>{summary}</small>", unsafe_allow_html=True)
+        c1, c2, c3, c4 = st.columns([1.1, 1.3, 1.6, 0.7])
+        item["quantity"] = int(c1.number_input("How many", 1, 10, int(item.get("quantity", 1) or 1), 1,
+                                               key=f"ap_qty_{household_id}_{i}"))
+        typical = typical_hours(item)
+        hours_default = float(item["hours_per_day"]) if item.get("hours_per_day") not in (None, "") \
+            else (typical or 0.0)
+        hours = c2.number_input("Hours a day", 0.0, 24.0, hours_default, 0.5, key=f"ap_hrs_{household_id}_{i}",
+                                help=f"Typical: {typical:g} h" if typical else None)
+        if typical and abs(hours - typical) < 1e-9 and item.get("hours_per_day") in (None, ""):
+            item.pop("hours_per_day", None)               # left at the typical value
+        else:
+            item["hours_per_day"] = float(hours)
+        item["usage"] = c3.select_slider("Usage", ["Low", "Medium", "High"], value=item.get("usage", "Medium"),
+                                         key=f"ap_use_{household_id}_{i}",
+                                         help="Used when hours a day is not known.")
+        if c4.button("🗑️", key=f"ap_del_{household_id}_{i}", help="Remove appliance", width="stretch",
+                     disabled=len(draft) <= 1):
+            draft.pop(i)
             st.rerun()
-    
+
     st.divider()
-    
-    # Add new appliance
     cat_cols = st.columns([2, 3, 1])
-    category = cat_cols[0].selectbox("Category", catalog.CATEGORIES + ["Custom"], key="sb_cat", label_visibility="collapsed")
+    category = cat_cols[0].selectbox("Category", catalog.CATEGORIES + ["Custom"], key="sb_cat",
+                                     label_visibility="collapsed")
     if category == "Custom":
-        name = cat_cols[1].text_input("Name", placeholder="e.g., sewing machine", key="sb_custom", label_visibility="collapsed")
+        name = cat_cols[1].text_input("Name", placeholder="e.g., sewing machine", key="sb_custom",
+                                      label_visibility="collapsed")
         if cat_cols[2].button("Add", type="primary", key="sb_add_custom", width="stretch", disabled=not name.strip()):
-            items.append({"name": name.strip()[:40], "type": "Other", "usage": "Medium", "spec_mode": "own", "own": {}})
-            _save(db, household_id)
-            st.success(f"{name.strip()} added")
+            draft.append({"name": name.strip()[:40], "type": "Other", "usage": "Medium", "spec_mode": "own", "own": {}})
             st.rerun()
     else:
         types = catalog.types_in(category)
         pick = cat_cols[1].selectbox("Appliance", [t.name for t in types], key="sb_type", label_visibility="collapsed")
         if cat_cols[2].button("Add", type="primary", key="sb_add", width="stretch"):
             t = next(t for t in types if t.name == pick)
-            items.append(catalog.item_for(t.key))
-            _save(db, household_id)
-            st.success(f"{t.name} added")
+            draft.append(catalog.item_for(t.key))
             st.rerun()
+
+    changed = json.dumps(draft, sort_keys=True, default=str) != json.dumps(saved_items, sort_keys=True, default=str)
+    if changed:
+        st.caption("You have unsaved changes to your appliances.")
+    save_col, cancel_col = st.columns(2)
+    if save_col.button("Save changes", type="primary", key="ap_save", width="stretch", disabled=not changed):
+        try:
+            clean, problems = validate_home_details({**hd, "appliances": draft})
+            db.save_home_details(household_id, clean)
+        except InvalidSetup as exc:
+            st.error(f"These appliances could not be saved: {exc}")
+            return
+        except Exception as exc:
+            log.exception("Saving appliances failed for household %s", household_id)
+            st.error("The appliances could not be saved just now. Your changes are kept here; try again.")
+            return
+        hd["appliances"] = clean["appliances"]
+        st.session_state.home_details = hd
+        for key in ("appl_draft", "home_state", "_warm"):
+            st.session_state.pop(key, None)
+        st.cache_data.clear()                 # predictions and tips are worked out again from the new list
+        log.info("Saved %d appliances for household %s", len(clean["appliances"]), household_id)
+        notify("success", "Appliances saved. Forecasts and tips now use the new list."
+               + (" Corrected: " + "; ".join(problems) if problems else ""))
+        st.rerun()
+    if cancel_col.button("Cancel", key="ap_cancel", width="stretch", disabled=not changed):
+        st.session_state.pop("appl_draft", None)
+        st.rerun()
 
 
 def ensemble_setting() -> dict:
@@ -1980,6 +2141,39 @@ def render_ensemble_settings():
             get_db().set_store(current_household_id(), "ensemble_weights", st.session_state.ensemble_setting)
         except Exception:
             pass
+
+
+def render_alert_settings():
+    """When to warn that the home is using more than forecast (saved per household)."""
+    import monitoring
+    db, household_id = get_db(), current_household_id()
+    try:
+        cur = monitoring.AlertSettings.clean(db.get_store(household_id, monitoring.SETTINGS_KEY))
+    except Exception:
+        log.exception("Could not read alert settings")
+        st.info("Alert settings are not available right now.")
+        return
+    enabled = st.toggle("Warn me when use is above the forecast", value=cur.enabled, key="al_on")
+    c1, c2, c3 = st.columns(3)
+    pct = c1.number_input("More than (%)", 5.0, 200.0, float(cur.threshold_pct), 5.0, key="al_pct",
+                          disabled=not enabled)
+    kwh = c2.number_input("And at least (units/hour)", 0.05, 5.0, float(cur.min_excess_kwh), 0.05, key="al_kwh",
+                          disabled=not enabled)
+    hours = c3.number_input("For hours in a row", 1, 6, int(cur.consecutive_hours), 1, key="al_hrs",
+                            disabled=not enabled)
+    new = monitoring.AlertSettings.clean({"enabled": enabled, "threshold_pct": pct, "min_excess_kwh": kwh,
+                                          "consecutive_hours": hours, "max_age_hours": cur.max_age_hours})
+    if new != cur:
+        try:
+            db.set_store(household_id, monitoring.SETTINGS_KEY, new.__dict__)
+            st.session_state.pop("_monitor_mark", None)          # check again with the new limits
+        except Exception:
+            log.exception("Could not save alert settings")
+            st.error("The alert settings could not be saved just now. Try again.")
+    st.caption(f"An alert is raised once per event, when each of {new.consecutive_hours} finished hour(s) in a row "
+               f"used more than {new.threshold_pct:.0f}% and at least {new.min_excess_kwh:.2f} units above the "
+               "forecast; a new alert needs use to return to normal first. Alerts are shown on the Dashboard and "
+               "kept on the Notifications page, and emailed when email is set up.")
 
 
 def render_settings_page():
@@ -2045,6 +2239,9 @@ def render_settings_page():
         with st.container(border=True):
             section(T("ens_title"))
             render_ensemble_settings()
+        with st.container(border=True):
+            section("Usage alerts")
+            render_alert_settings()
         with st.container(border=True):
             section(T("sb_section_display"))
             display_count = st.slider(T("sb_trend_window"), 20, 500, int(cur["display_count"]), key="sb_display")
@@ -2483,12 +2680,9 @@ def main_dashboard():
             </div>
         </div>
         """, unsafe_allow_html=True)
-        if e:
-            # The exception text is kept for debugging but is never the primary
-            # message: it is untranslated, can contain markup, and means nothing
-            # to the person looking at the screen.
-            with st.expander(T("error_details_toggle")):
-                st.code(f"{type(e).__name__}: {str(e)[:500]}", language="text")
+        # The details go to the log (with the traceback) and never to the
+        # screen: they mean nothing to the person and can leak internals.
+        log.exception("Dashboard failed to render: %s", type(e).__name__)
         c1, c2 = st.columns(2)
         with c1:
             if st.button(T("btn_go_home"), type="primary", key="err_go_home"):
@@ -2629,7 +2823,7 @@ def _main_dashboard_inner():
         try:
             nh = forecaster.next_hour(upto, w_lstm=forecast_lstm_weight(forecaster))
         except Exception as exc:
-            print(f"Next-hour forecast failed: {exc}")
+            log.exception("Next-hour forecast failed")
             nh = None
     if nh:
         pred_kw = nh["pred_kw"] * sf
@@ -2827,7 +3021,12 @@ def _main_dashboard_inner():
         st.markdown("<div style='height:1.5rem'></div>", unsafe_allow_html=True)
         head(meter_chip, "sim")
         prepare_meter("page")
-        render_now_section(tariff_rate, owned)
+        try:
+            people_now = household_people(get_db(), household_id, user_display, auth_email)
+        except Exception:
+            log.exception("Could not read household members")
+            people_now = [{"name": user_display, "email": auth_email}]
+        render_now_section(tariff_rate, owned, household_id=household_id, people=people_now)
         render_brief_section(todays_brief(tariff_rate, owned, household_id, user_display, auth_email))
         render_tomorrow_section(tariff_rate, owned)
 
@@ -2983,7 +3182,7 @@ def main():
             init_scheduler()
             st.session_state.scheduler_initialized = True
         except Exception as e:
-            print(f"Scheduler init failed: {e}")
+            log.exception("Scheduler init failed")
     
     apply_theme()
     inject_skin()

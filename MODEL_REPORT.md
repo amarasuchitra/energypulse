@@ -1,6 +1,6 @@
 # EnergyPulse forecasting: model report
 
-Generated from `models/forecast_meta.json` (training run 2026-10-14T00:33:54).
+Generated from `models/forecast_meta.json` (training run 2026-10-14T01:33:35).
 Regenerate both with `python model.py && python model_report.py`.
 
 ## Data and evaluation
@@ -40,10 +40,48 @@ XGBoost is trained on absolute error; the LSTM reads the last 48 hours.
 - Models trained on the training period only scored 0.289 kW on the same test
   hours; refitting on train + validation gave 0.285 kW.
 
+All models, same test hours (R² is the share of hour-to-hour variation explained):
+
+| Model | MAE (kW) | RMSE (kW) | R² |
+|---|---|---|---|
+| Hybrid (XGBoost + LSTM) | 0.285 | 0.445 | 0.642 |
+| XGBoost | 0.288 | 0.448 | 0.638 |
+| LSTM | 0.309 | 0.477 | 0.591 |
+| Random forest | 0.315 | 0.459 | 0.619 |
+| Linear (ridge) regression | 0.353 | 0.495 | 0.556 |
+| Baseline: next hour = this hour | 0.397 | 0.603 | 0.344 |
+| Baseline: mean of same hour, last 7 days | 0.445 | 0.624 | 0.296 |
+
+Random forest and ridge regression use the same features and training data; they are recorded for
+comparison and are not used by the app.
+
 Hourly household use is noisy (an appliance switching on changes the hour by kilowatts), so a
 next-hour error of about 0.29 kW is close to what the readings allow. The fair comparison is the
 baseline: the forecast is **28% more accurate** than assuming the next hour
 repeats this one.
+
+## Simulated meter: next-hour model
+
+The live dashboard reads a **simulated** smart meter (an Indian home built from the user's own appliance
+list), not a physical meter. The UCI model above does not transfer to it, so it has its own model:
+XGBoost on power-only features (the same lags, same-hour history and rolling statistics; no sub-meter
+readings), trained on 80 simulated homes, early-stopped on 20
+other homes and tested on 30 homes it never saw (different appliances, habits, sizes,
+cities and seasons; 38,130 test hours, mean 0.49 kW).
+
+| Model (unseen simulated homes) | MAE (kW) | RMSE (kW) | R² |
+|---|---|---|---|
+| XGBoost | 0.109 | 0.210 | 0.744 |
+| Baseline: next hour = this hour | 0.182 | 0.330 | 0.368 |
+| Baseline: mean of same hour, last 7 days | 0.166 | 0.275 | 0.562 |
+
+- **34% lower error** than the better of the two baselines.
+- 90% range coverage on the test homes: **88.2%** (target 90%; calibrated on the
+  validation homes, so new homes come out slightly below target), average width 0.47 kW.
+- These are results on simulated data. They show the model learns the simulator's patterns; they are not
+  a measurement of accuracy on a real home's meter.
+- The dashboard logs each forecast before its hour happens and fills in the actual afterwards
+  (`forecast_log` table), so live accuracy and overconsumption alerts use the forecast that was really made.
 
 ## Bill forecast (energy over the next 30 days)
 
@@ -67,16 +105,20 @@ model, because this home's seasons (French winter heating) say nothing about ano
 - For each shiftable appliance run, every allowed start time (15-minute steps) is costed against the
   time-of-day tariff, within the household's limits (quiet hours, allowed hours, how far ahead a geyser
   may heat).
-- Appliances are planned together, biggest saving first: each accepted move is added to the day's
-  load (90th percentile of everything else), and a time is offered only if the home stays under
-  85% of its sanctioned load.
+- Appliances are planned together, biggest saving first, against each past day's actual load: a run is
+  moved only to a time where the home would have stayed under 85% of its sanctioned load on that day,
+  and each accepted move is added to that day's load before the next is planned.
+- Every plan is re-checked (`scheduler.validate_plan`): baseline vs optimised energy, cost and peak, and
+  every moved run against allowed hours, quiet hours, how far ahead it may run and the load cap. Moving a
+  run saves money, not energy; energy savings from the efficiency tips are estimates from BEE guidance
+  and are labelled as such.
 - Moves that are each too small to mention are offered together when they add up.
 - On a flat tariff no timing advice is given, because moving use saves nothing.
 
 ## Limits
 
 - One household, recorded 2006-2010, in France. Accuracy on other homes will differ; the app says so.
-- The simulated meter used for appliance-level views and the daily brief is a simulation; its own
-  forecast was backtested on simulated homes (about 11% daily error) and is labelled as simulated.
+- The live meter is simulated; its next-hour and daily figures are evaluated on simulated homes only
+  (daily brief backtest: about 11% daily error) and the app labels them as simulated.
 
-Software: python 3.11.8, sklearn 1.9.1, xgboost 3.2.0, tensorflow 2.21.0. Training took 756 s.
+Software: python 3.11.8, sklearn 1.9.1, xgboost 3.2.0, tensorflow 2.21.0. Training took 1065 s.

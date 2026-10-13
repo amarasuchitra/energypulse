@@ -289,10 +289,14 @@ def test_home_setup_is_remembered(tmp_path):
     assert db.get_home_details("house-1") is None
     details = {"appliances": [{"name": "Microwave", "type": "Kitchen"}], "tariff_rate": 7.5, "peak_morning": (6, 10)}
     db.save_home_details("house-1", details)
-    assert db.get_home_details("house-1") == details
+    got = db.get_home_details("house-1")
+    # stored as validated (home_config.py): what was given is kept, missing fields get defaults
+    assert got["tariff_rate"] == 7.5 and got["peak_morning"] == (6, 10)
+    assert got["appliances"] == [{"name": "Microwave", "type": "Kitchen", "usage": "Medium", "quantity": 1}]
+    assert got["occupants"] == 4 and got["home_type"] == "Other"
     assert db.get_home_details("house-2") is None            # another household sees nothing
     db.save_home_details("house-1", {"appliances": []})
-    assert db.get_home_details("house-1") == {"appliances": []}
+    assert db.get_home_details("house-1")["appliances"] == []
 
 
 def test_daily_forecast_is_measured_precise_and_sent_once(faulty, tmp_path):

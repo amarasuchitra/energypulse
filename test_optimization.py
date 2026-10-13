@@ -3,10 +3,11 @@ import time
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from appliance_profiles import APPLIANCE_KEYS, HouseholdPrefs, get_profiles
+from appliance_profiles import APPLIANCE_KEYS, HouseholdPrefs
 from meter_sim import simulate_home
-from scheduler import _slots, background_load, recommend
+from scheduler import _slots, day_loads, recommend, validate_plan
 from sessions import extract_sessions
 from tariff import Tariff
 
@@ -38,32 +39,50 @@ def test_slots_wrap_midnight():
     assert set(_slots(23 * 60 + 50, 30)) == {95, 0, 1}      # 23:50-00:20
 
 
-def test_background_load_excludes_movable_appliances():
-    pred = _detected()
-    with_all = background_load(pred, [])
-    without = background_load(pred, ["washing_machine", "water_pump", "geyser"])
-    assert len(with_all) == 96 and (without <= with_all + 1e-9).all()
+def test_day_loads_cover_every_slot():
+    loads = day_loads(_detected())
+    assert all(len(v) == 96 for v in loads.values()) and len(loads) >= 20
 
 
-def test_moves_never_push_the_home_over_its_cap():
+def test_plans_respect_the_cap_on_every_real_day():
     pred = _detected()
     sessions = extract_sessions(pred)
     for cap in (1.5, 2.5, 4.0):
         prefs = HouseholdPrefs(sanctioned_kw=cap, load_margin=1.0, min_monthly_saving_rs=0, max_suggestions=10)
         result = recommend(pred, sessions, Tariff(), prefs)
-        movable = [k for k, p in get_profiles(prefs).items() if p.category == "shiftable"]
-        load = background_load(pred, movable)
-        for s in result["suggestions"]:
-            if s["kind"] != "shift" or "members" in s:
-                continue
-            group = sessions[sessions["appliance"] == s["appliance"]]
-            kw = float((group["kwh"] / (group["span_min"] / 60.0)).quantile(0.9))
-            hh, mm = s["title"].split(" around ")[1].split(" instead")[0].split(" ")[0].split(":")
-            pm = s["title"].split(" around ")[1].split(" instead")[0].endswith("pm")
-            start = (int(hh) % 12 + (12 if pm else 0)) * 60 + int(mm)
-            dur = int(group["span_min"].median())
-            load[_slots(start, dur)] += kw
-        assert load.max() <= cap + 0.6, (cap, load.max())      # per-run choices vary around the typical time
+        check = validate_plan(pred, sessions, result["suggestions"], Tariff(), prefs)
+        assert check["all_constraints_ok"], (cap, check["load_cap_violations"])
+        assert all(c["ok"] for c in check["checks"])
+
+
+def test_plan_figures_are_consistent():
+    pred = _detected(days=28, seed=7)
+    sessions = extract_sessions(pred)
+    prefs = HouseholdPrefs(min_monthly_saving_rs=0, max_suggestions=10)
+    result = recommend(pred, sessions, Tariff(), prefs)
+    v = validate_plan(pred, sessions, result["suggestions"], Tariff(), prefs)
+    assert v["shift"]["energy_saving_kwh_month"] == 0.0              # moving a run does not change its units
+    assert v["cost_saving_month"] == pytest.approx(v["baseline"]["cost_month"] - v["optimised"]["cost_month"], abs=0.02)
+    if v["baseline"]["cost_month"] > 0:
+        assert v["cost_saving_pct"] == pytest.approx(v["cost_saving_month"] / v["baseline"]["cost_month"] * 100, abs=0.02)
+    assert v["energy_saving_kwh_month"] == pytest.approx(v["baseline"]["kwh_month"] - v["optimised"]["kwh_month"], abs=0.02)
+    assert v["cost_saving_month"] >= 0 and v["optimised"]["avg_daily_peak_kw"] <= v["baseline"]["avg_daily_peak_kw"] + 0.05
+
+
+def test_validator_catches_an_infeasible_plan():
+    pred = _detected()
+    sessions = extract_sessions(pred)
+    day = pd.Timestamp(pred["datetime"].iloc[0]).normalize()
+    bad = [{"kind": "shift", "appliance": "washing_machine", "monthly_saving_rs": 50,
+            "moves": [{"day": day, "from": 600, "to": 23 * 60, "dur": 60, "kw": 0.5, "kwh": 0.5}]}]
+    v = validate_plan(pred, sessions, bad, Tariff(), HouseholdPrefs())
+    assert not v["all_constraints_ok"] and v["checks"][0]["problems"]
+
+
+def test_no_improvement_means_no_invented_savings():
+    pred = _detected()
+    v = validate_plan(pred, extract_sessions(pred), [], Tariff(), HouseholdPrefs())
+    assert v["cost_saving_month"] == 0 and v["energy_saving_kwh_month"] == 0 and v["all_constraints_ok"]
 
 
 def test_small_moves_are_offered_together():

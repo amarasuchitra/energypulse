@@ -251,7 +251,7 @@ def effective_specs(item: dict) -> Optional[dict]:
         })
         spec["running_current_a"] = _pf_current(spec["running_w"], spec["voltage_v"], spec["power_factor"])
         spec["yearly_kwh"] = round(spec["running_w"] * t.duty * t.hours_per_day * 365 / 1000.0, 0)
-        return spec
+        return _with_own_use(spec, item, t)
     if mode == "own":
         own = item.get("own") or {}
         rated = float(own.get("rated_w") or 0)
@@ -265,7 +265,7 @@ def effective_specs(item: dict) -> Optional[dict]:
         hours = t.hours_per_day if t else 2.0
         duty = t.duty if t else 1.0
         star = own.get("star") or None
-        return {
+        return _with_own_use({
             "model_id": None, "type": t.key if t else "custom", "type_name": t.name if t else item.get("name", "Appliance"),
             "category": t.category if t else item.get("type", "Other"),
             "label": (" ".join(x for x in [own.get("brand", ""), own.get("model_no", "")] if x).strip()
@@ -282,8 +282,25 @@ def effective_specs(item: dict) -> Optional[dict]:
             "idle_reason": t.idle_reason if t else "",
             "source": "web" if own.get("looked_up") else "rating plate" if item.get("photos") else "entered",
             "source_urls": own.get("source_urls", []),
-        }
+        }, item, t)
     spec = specs(item.get("model_id", "")) if t else None
     if spec:
         spec["source"] = "catalogue"
+    return _with_own_use(spec, item, t)
+
+
+def _with_own_use(spec, item, t):
+    """Use the household's own hours a day and quantity for the yearly figure, when given."""
+    if not spec or not isinstance(item, dict):
+        return spec
+    hours = item.get("hours_per_day")
+    qty = int(item.get("quantity", 1) or 1)
+    if hours in (None, "") and qty == 1:
+        return spec
+    spec = dict(spec)
+    if hours not in (None, ""):
+        spec["hours_per_day"] = float(hours)
+    duty = t.duty if t else 1.0
+    spec["quantity"] = qty
+    spec["yearly_kwh"] = round(spec["running_w"] * duty * spec["hours_per_day"] * qty * 365 / 1000.0, 0)
     return spec

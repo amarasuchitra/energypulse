@@ -54,6 +54,10 @@ jobs:
       - name: Run scheduler, sign-in, meter API, ensemble and interval tests
         run: |
           python -m pytest test_scheduler_jobs.py test_remember_me.py test_meter_api.py test_ensemble.py test_optimization.py -v --tb=short
+
+      - name: Run monitoring and appliance-setup tests
+        run: |
+          python -m pytest test_monitoring.py test_home_config.py test_forecast_sim.py -v --tb=short
       
       - name: Check imports
         run: |

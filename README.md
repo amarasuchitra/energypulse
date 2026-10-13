@@ -14,6 +14,15 @@ dataset (34,168 hourly rows, December 2006 – November 2010) and a trained
 > meter feed. To use your own readings, upload a CSV — see
 > [Using your own data](#using-your-own-data).
 
+## Live monitoring, alerts and saved appliances (V4.5)
+
+- **A forecast for the live meter.** The dashboard's simulated meter now has its own next-hour model, trained on simulated homes and tested on others it never saw (results in [MODEL_REPORT.md](MODEL_REPORT.md)). The card shows the hour it is for, a 90% range and when it was made. The live reading updates every second.
+- **Overconsumption alerts.** Each forecast is stored before its hour; when actual use stays above it (default: 15% and 0.15 kWh, two hours running) you get one alert with the numbers, the appliance that rose most and what to do. It re-arms once use is back to normal. Set the limits under **Settings → Usage alerts**. Email is sent only when SMTP is configured, and the history says whether it was really sent.
+- **Edit appliances.** Quantity and hours a day per appliance, add and remove, with **Save** and **Cancel**. Saved per household in the database and checked before saving; changes feed the forecast and the plan right away.
+- **Plan check.** The Optimize tab shows baseline vs optimised cost, energy and peak, and confirms every moved run respects your hours and the load limit. Energy savings from tips are marked as estimates.
+- **No raw errors on screen.** Problems are logged (`ENERGYPULSE_LOG_LEVEL`) and the dashboard shows a short message instead.
+- Full audit: [AUDIT.md](AUDIT.md).
+
 ## Honest forecasts and load-aware scheduling (V4.4)
 
 - **Leak-free forecasting.** The next-hour model now forecasts from the past only and is compared with simple baselines on data it never saw: 0.285 kW error, 28% better than "next hour = this hour". The bill forecast is off by 5% on a 30-day total, against 15% for a recent average. Details in [MODEL_REPORT.md](MODEL_REPORT.md).
@@ -322,6 +331,17 @@ streamlit run app.py
 ```
 
 The app then opens at `http://localhost:8501`.
+
+## Running the tests
+
+```bash
+pip install pytest
+python -m pytest -q
+```
+
+The monitoring, appliance-setup and forecast tests on their own:
+`python -m pytest -q test_monitoring.py test_home_config.py test_forecast_sim.py test_optimization.py`.
+CI (`.github/workflows/ci.yml`) runs the same files.
 
 ## Notification setup
 

@@ -45,6 +45,8 @@ energypulse.db
 !models/forecast_q95.pkl
 !models/forecast_q05_power.pkl
 !models/forecast_q95_power.pkl
+!models/forecast_q05_sim.pkl
+!models/forecast_q95_sim.pkl
 !models/forecast_lstm.keras
 !models/daily_seasonal.pkl
 !models/daily_generic.pkl

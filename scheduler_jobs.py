@@ -7,6 +7,7 @@ Three jobs run inside the app's own process (APScheduler, daemon thread):
   bill_alerts     09:00  warn when next month's predicted bill passes the threshold
   weekly_summary  Mon 10:00  last week's units and cost against the week before
   guest_cleanup   hourly     remove guest homes older than a day
+  meter_usage_check hourly (:05)  forecast vs actual for each home; overconsumption alerts
 
 Each job works from what is saved in the database (home setup, family members,
 replayed meter readings), so it does not need anyone to have the app open.
@@ -20,10 +21,13 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 import pandas as pd
+
+from ep_log import get_logger
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 DEFAULT_RATE = 8.0
+log = get_logger("scheduler_jobs")
 
 _scheduler = None
 
@@ -220,6 +224,51 @@ def send_weekly_summaries(db=None, service=None, now: Optional[datetime] = None)
     return counts
 
 
+def check_meter_usage(db=None, service=None, fc=None) -> Dict[str, int]:
+    """
+    Hourly: for every registered household, log the simulated meter's forecasts,
+    record finished hours and raise an overconsumption alert if use is above
+    forecast.  Uses each household's own time zone and saved appliances.
+    """
+    from zoneinfo import ZoneInfo
+
+    import monitoring
+    from clock import DEFAULT_TZ, valid
+    from forecast import Forecaster
+    from meter_source import SCENARIOS, detected_history, owned_appliances, with_habits
+
+    if db is None:
+        from db import get_db
+        db = get_db()
+    if service is None:
+        from notifications import get_notification_service
+        service = get_notification_service()
+    fc = fc or Forecaster.load(use_lstm=False)
+    counts = {"checked": 0, "alerts": 0, "skipped": 0, "failed": 0}
+    for h in registered_households(db):
+        hid = h["household_id"]
+        try:
+            home = db.get_home_details(hid)
+            if not home:
+                counts["skipped"] += 1
+                continue
+            tz = home.get("timezone") if valid(home.get("timezone")) else DEFAULT_TZ
+            now = pd.Timestamp.now(tz=ZoneInfo(tz)).tz_localize(None)
+            owned = owned_appliances(home)
+            scenario = with_habits(list(SCENARIOS)[0], home)
+            minute_df = detected_history(str(now.date()), scenario, owned)
+            res = monitoring.run_check(db, fc, hid, minute_df, now, owned,
+                                       people=household_people(db, hid, h["name"], h["email"]),
+                                       service=service, language=h.get("preferred_language") or "en")
+            counts["checked"] += 1
+            counts["alerts"] += int(bool(res.get("alert")))
+        except Exception as e:
+            counts["failed"] += 1
+            log.exception("Meter check failed for %s: %s", hid, e)
+    log.info("Hourly meter check: %s", counts)
+    return counts
+
+
 def purge_guests(db=None, max_age_hours: float = 24) -> int:
     """Remove guest homes left behind by visitors who closed the tab without logging out."""
     if db is None:
@@ -257,13 +306,19 @@ def schedule_guest_cleanup(minutes=60):
                             id="guest_cleanup", replace_existing=True, coalesce=True)
 
 
+def schedule_meter_checks(minute=5):
+    get_scheduler().add_job(check_meter_usage, CronTrigger(minute=minute), id="meter_usage_check",
+                            replace_existing=True, misfire_grace_time=1800, coalesce=True)
+
+
 def init_scheduler():
     """Register all jobs (safe to call more than once)."""
+    schedule_meter_checks()
     schedule_daily_brief()
     schedule_bill_alerts()
     schedule_weekly_summary()
     schedule_guest_cleanup()
-    print("Scheduler initialized: daily brief, bill alerts, weekly summary, guest cleanup")
+    log.info("Scheduler initialized: meter checks (hourly), daily brief, bill alerts, weekly summary, guest cleanup")
 
 
 if __name__ == "__main__":

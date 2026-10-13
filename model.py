@@ -65,6 +65,9 @@ PATHS = {
     "xgb_power": os.path.join(MODEL_DIR, "forecast_xgb_power.json"),
     "q05_power": os.path.join(MODEL_DIR, "forecast_q05_power.pkl"),
     "q95_power": os.path.join(MODEL_DIR, "forecast_q95_power.pkl"),
+    "xgb_sim": os.path.join(MODEL_DIR, "forecast_xgb_sim.json"),
+    "q05_sim": os.path.join(MODEL_DIR, "forecast_q05_sim.pkl"),
+    "q95_sim": os.path.join(MODEL_DIR, "forecast_q95_sim.pkl"),
     "lstm": os.path.join(MODEL_DIR, "forecast_lstm.keras"),
     "lstm_scaling": os.path.join(MODEL_DIR, "forecast_lstm_scaling.json"),
     "q05": os.path.join(MODEL_DIR, "forecast_q05.pkl"),
@@ -92,6 +95,37 @@ def _rmse(y, p):
     y, p = np.asarray(y, float), np.asarray(p, float)
     m = np.isfinite(y) & np.isfinite(p)
     return float(np.sqrt(np.mean((y[m] - p[m]) ** 2)))
+
+
+def _r2(y, p):
+    y, p = np.asarray(y, float), np.asarray(p, float)
+    m = np.isfinite(y) & np.isfinite(p)
+    ss = float(np.sum((y[m] - y[m].mean()) ** 2))
+    return 1.0 - float(np.sum((y[m] - p[m]) ** 2)) / ss if ss > 0 else float("nan")
+
+
+def _scores(y, p):
+    return {"mae_kw": round(_mae(y, p), 4), "rmse_kw": round(_rmse(y, p), 4), "r2": round(_r2(y, p), 4)}
+
+
+def train_alternatives(Xtv, ytv, Xte):
+    """Simpler models on the same features and data, for comparison only (not used by the app)."""
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.impute import SimpleImputer
+    from sklearn.linear_model import Ridge
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+    out = {}
+    t = time.time()
+    ridge = make_pipeline(SimpleImputer(strategy="median"), StandardScaler(), Ridge(alpha=1.0)).fit(Xtv, ytv)
+    out["linear_ridge"] = ridge.predict(Xte)
+    _log(f"  Ridge regression trained in {time.time() - t:.0f}s")
+    t = time.time()
+    rf = RandomForestRegressor(n_estimators=300, min_samples_leaf=10, max_features=0.3,
+                               n_jobs=-1, random_state=SEED).fit(Xtv, ytv)
+    out["random_forest"] = rf.predict(Xte)
+    _log(f"  Random forest trained in {time.time() - t:.0f}s")
+    return out
 
 
 def _log(msg):
@@ -312,6 +346,54 @@ def sample_month_forecast(h, d, model, feats, seasonal=True):
     return out
 
 
+# ----------------------------------------------------------------- simulated meter
+def train_simulated_meter(xgb_params):
+    """
+    Next-hour model for the app's simulated meter.  Trained on simulated homes,
+    early-stopped on other simulated homes, tested on yet other homes it never saw.
+    """
+    import sim_dataset as sd
+    t = time.time()
+    Xtr, ytr, _ = sd.build(sd.TRAIN_SEEDS)
+    Xva, yva, _ = sd.build(sd.VALIDATION_SEEDS)
+    Xte, yte, ids = sd.build(sd.TEST_SEEDS)
+    _log(f"  homes: {len(sd.TRAIN_SEEDS)} train, {len(sd.VALIDATION_SEEDS)} validation, "
+         f"{len(sd.TEST_SEEDS)} test ({len(ytr):,} / {len(yva):,} / {len(yte):,} hours; built in {time.time() - t:.0f}s)")
+    model, params = train_xgboost(Xtr, ytr, Xva, yva,
+                                  only={k: v for k, v in xgb_params.items() if k != "n_estimators"})
+    p = np.maximum(model.predict(Xte), 0.0)
+    q, offset = train_interval(Xtr, ytr, Xva, yva)
+    lo, hi = band(q, offset, Xte)
+    yt = yte.values
+    out = {
+        "features": list(Xtr.columns),
+        "interval_offset_kw": offset,
+        "homes": {"train": len(sd.TRAIN_SEEDS), "validation": len(sd.VALIDATION_SEEDS), "test": len(sd.TEST_SEEDS)},
+        "test_hours": int(len(yt)),
+        "test_mean_kw": round(float(np.mean(yt)), 4),
+        "comparison": {
+            "xgboost": _scores(yt, p),
+            "baseline_persistence": _scores(yt, Xte["lag_0"]),
+            "baseline_same_hour_mean_7_days": _scores(yt, Xte["same_hour_mean7"]),
+        },
+        "interval": {"test_coverage": round(float(np.mean((yt >= lo) & (yt <= hi))), 4),
+                     "mean_width_kw": round(float(np.mean(hi - lo)), 4)},
+        "xgb_params": params,
+    }
+    best_base = min(out["comparison"]["baseline_persistence"]["mae_kw"],
+                    out["comparison"]["baseline_same_hour_mean_7_days"]["mae_kw"])
+    out["improvement_over_best_baseline_pct"] = round((1 - out["comparison"]["xgboost"]["mae_kw"] / best_base) * 100, 1)
+    model.save_model(PATHS["xgb_sim"])
+    for alpha, key in ((0.05, "q05_sim"), (0.95, "q95_sim")):
+        with open(PATHS[key], "wb") as fh:
+            pickle.dump(q[alpha], fh)
+    for k, v in out["comparison"].items():
+        _log(f"  {k:32s} MAE {v['mae_kw']:.4f}  RMSE {v['rmse_kw']:.4f}  R2 {v['r2']:.3f}")
+    _log(f"  {out['improvement_over_best_baseline_pct']}% better than the best baseline; "
+         f"90% band coverage {out['interval']['test_coverage']}")
+    return out
+
+
 # ----------------------------------------------------------------- main
 def main(skip_lstm: bool = False):
     os.makedirs(MODEL_DIR, exist_ok=True)
@@ -398,7 +480,22 @@ def main(skip_lstm: bool = False):
          f"({power_only['improvement_over_persistence_pct']}% better than persistence); "
          f"band coverage {power_only['interval']['test_coverage']}")
 
+    _log("\n== Alternative models (comparison only) ==")
+    alternatives = train_alternatives(Xtv, ytv, Xte)
+
     lm = np.isfinite(pl_te)
+    comparison = {
+        "hybrid_xgboost_lstm": _scores(yt, ph_te),
+        "xgboost": _scores(yt, px_te),
+        "lstm": _scores(yt[lm], pl_te[lm]) if lm.any() else None,
+        "random_forest": _scores(yt, alternatives["random_forest"]),
+        "linear_ridge": _scores(yt, alternatives["linear_ridge"]),
+        "baseline_persistence": _scores(yt, Xte["lag_0"]),
+        "baseline_same_hour_mean_7_days": _scores(yt, Xte["same_hour_mean7"]),
+    }
+    for k, v in comparison.items():
+        if v:
+            _log(f"  {k:32s} MAE {v['mae_kw']:.4f}  RMSE {v['rmse_kw']:.4f}  R2 {v['r2']:.3f}")
     hourly_metrics = {
         "test_rows": int(len(yt)),
         "test_mean_kw": round(float(np.mean(yt)), 4),
@@ -416,6 +513,7 @@ def main(skip_lstm: bool = False):
                               if np.isfinite(pl_va).any() else None},
         "interval": {"nominal": NOMINAL_COVERAGE, "test_coverage": round(coverage, 4),
                      "mean_width_kw": round(float(np.mean(hi - lo)), 4), "conformal_offset_kw": round(offset, 5)},
+        "comparison": comparison,
     }
     _log("\n== Next hour, test period ==")
     for k, v in hourly_metrics["mae_kw"].items():
@@ -452,6 +550,9 @@ def main(skip_lstm: bool = False):
         with open(PATHS[key], "wb") as fh:
             pickle.dump(q[alpha], fh)
 
+    _log("\n== Simulated meter: next-hour model trained on simulated homes ==")
+    simulated = train_simulated_meter(xgb_params)
+
     import sklearn
     versions = {"python": platform.python_version(), "sklearn": sklearn.__version__}
     try:
@@ -473,6 +574,7 @@ def main(skip_lstm: bool = False):
         "interval_offset_kw": offset,
         "hourly": hourly_metrics,
         "power_only": power_only,
+        "simulated_meter": simulated,
         "daily": daily,
         "versions": versions,
         "training_seconds": round(time.time() - started),

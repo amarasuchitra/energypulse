@@ -25,7 +25,10 @@ from meter_source import (
     HISTORY_DAYS, SCENARIOS, SOURCE_NOTE, detected_history, get_model, last_days, split_scenario, today_str,
     with_habits,
 )
-from scheduler import recommend
+from scheduler import recommend, validate_plan
+from ep_log import get_logger
+
+log = get_logger("appliance_ui")
 from sessions import extract_sessions, totals
 from tariff import Tariff
 
@@ -74,30 +77,35 @@ def render_meter_settings():
     st.session_state["meter_tod"] = tod_on
 
 
+def _past(date, scenario, owned, days):
+    """The last `days` FULL days of meter history before `date`: today has not happened yet."""
+    pred = detected_history(date, scenario, owned)
+    return last_days(pred[pd.to_datetime(pred["datetime"]) < pd.Timestamp(date)], days)
+
+
 def _history(owned, days):
     scenario, tod = meter_settings()
-    pred = detected_history(today_str(), scenario, tuple(owned))
-    return last_days(pred, days), tod
+    return _past(today_str(), scenario, tuple(owned), days), tod
 
 
 # Streamlit re-runs every tab on each refresh, so anything slower than a
 # lookup is cached on the inputs that define it.
 @st.cache_data(show_spinner=False)
 def _sessions_cached(date, scenario, owned, days, rate, tod):
-    pred = last_days(detected_history(date, scenario, owned), days)
+    pred = _past(date, scenario, owned, days)
     return extract_sessions(pred, Tariff(rate=rate, tod_enabled=tod))
 
 
 @st.cache_data(show_spinner=False)
 def _totals_cached(date, scenario, owned, days, rate, tod):
-    pred = last_days(detected_history(date, scenario, owned), days)
+    pred = _past(date, scenario, owned, days)
     tot = totals(pred, Tariff(rate=rate, tod_enabled=tod))
     return tot[tot["appliance"].isin(list(owned) + ["other"])].reset_index(drop=True)
 
 
 @st.cache_data(show_spinner=False)
 def _recommend_cached(date, scenario, owned, days, rate, tod, min_saving, dismissed, sanctioned_kw=3.0):
-    pred = last_days(detected_history(date, scenario, owned), days)
+    pred = _past(date, scenario, owned, days)
     sessions = _sessions_cached(date, scenario, owned, days, rate, tod)
     prefs = HouseholdPrefs(min_monthly_saving_rs=float(min_saving), dismissed=set(dismissed),
                            sanctioned_kw=float(sanctioned_kw))
@@ -345,15 +353,65 @@ def render_analysis_tab(tariff_rate: float, owned, section, layout_fn):
                    "Tomorrow's forecast and plan on the Overview page are built from these habits.")
 
 
+@st.cache_data(show_spinner=False, max_entries=8)
+def _plan_check_cached(keys, min_saving, dismissed, sanctioned_kw):
+    date, scenario, owned, days, rate, tod = keys
+    pred = _past(date, scenario, owned, days)
+    sessions = _sessions_cached(*keys)
+    result = _recommend_cached(*keys, float(min_saving), dismissed, float(sanctioned_kw))
+    prefs = HouseholdPrefs(min_monthly_saving_rs=float(min_saving), sanctioned_kw=float(sanctioned_kw))
+    return validate_plan(pred, sessions, result["suggestions"], Tariff(rate=rate, tod_enabled=tod), prefs)
+
+
+def _render_plan_check(pred, sessions, result, tariff, section):
+    """Baseline against the suggested plan, on this home's own last 30 days, with every limit re-checked."""
+    keys = _keys(st.session_state.get("_save_owned", ()), HISTORY_DAYS, tariff.rate)
+    try:
+        v = _plan_check_cached(keys, float(st.session_state.get("save_min_saving", 30)),
+                               tuple(sorted(st.session_state.get("nilm_dismissed", set()))),
+                               float(st.session_state.get("sanctioned_kw", 3.0)))
+    except Exception:
+        log.exception("Plan check failed")
+        st.info("The plan check is not available right now.")
+        return
+    section("If you follow these suggestions (estimated, per month)")
+    b, o = v["baseline"], v["optimised"]
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Cost", f"Rs. {o['cost_month']:,.0f}", f"-Rs. {v['cost_saving_month']:,.0f} ({v['cost_saving_pct']:.1f}%)",
+              delta_color="inverse", help=f"Now about Rs. {b['cost_month']:,.0f} a month.")
+    c2.metric("Units", f"{o['kwh_month']:,.0f} kWh", f"-{v['energy_saving_kwh_month']:,.1f} kWh ({v['energy_saving_pct']:.1f}%)",
+              delta_color="inverse", help=f"Now about {b['kwh_month']:,.0f} kWh a month.")
+    c3.metric("Average daily peak", f"{o['avg_daily_peak_kw']:.2f} kW", f"{v['peak_change_kw']:+.2f} kW",
+              delta_color="inverse", help=f"Now {b['avg_daily_peak_kw']:.2f} kW (highest 15-minute load each day).")
+    lines = [f"Worked out on your last {v['history_days']:.0f} days of the simulated meter, scaled to a month."]
+    if v["shift"]["runs_moved"]:
+        lines.append(f"{v['shift']['runs_moved']} runs moved to cheaper times: Rs. {v['shift']['cost_saving_month']:,.0f} "
+                     "a month less, with the same units (moving a run does not change how much it uses).")
+    if v["estimated_tips"]["energy_saving_kwh_month"]:
+        lines.append(f"Setting and timer changes: about {v['estimated_tips']['energy_saving_kwh_month']:,.1f} kWh and "
+                     f"Rs. {v['estimated_tips']['cost_saving_month']:,.0f} a month ({v['estimated_tips']['label']}).")
+    if v["load_cap_kw"]:
+        lines.append(f"Every moved run was checked against its allowed hours, quiet hours and how early it may "
+                     f"run, and against {v['load_cap_kw']:.2f} kW (85% of your sanctioned load) on each day: "
+                     + ("all limits met." if v["all_constraints_ok"] else
+                        f"{sum(not c['ok'] for c in v['checks'])} moves and {v['load_cap_violations']} "
+                        "quarter-hours broke a limit, so treat this plan with care."))
+    if not v["shift"]["runs_moved"] and not v["estimated_tips"]["energy_saving_kwh_month"]:
+        lines = ["No change was found that would save money within your limits, so no saving is claimed."]
+    st.caption(" ".join(lines))
+
+
 def render_save_tab(tariff_rate: float, owned, section, layout_fn):
     st.caption(SOURCE_NOTE)
     min_saving = st.number_input("Hide tips saving less than (Rs./month)", 0, 500, 30, 10,
                                  key="save_min_saving")
     pred, tod = _history(owned, HISTORY_DAYS)
     tariff = Tariff(rate=float(tariff_rate), tod_enabled=tod)
+    st.session_state["_save_owned"] = tuple(owned)
     sessions, result = _advice(_keys(owned, HISTORY_DAYS, tariff_rate), min_saving)
 
     _render_suggestions(result, owned, section, "save")
+    _render_plan_check(pred, sessions, result, tariff, section)
     _render_alerts(result, section)
 
     section("What if you used one appliance less?")

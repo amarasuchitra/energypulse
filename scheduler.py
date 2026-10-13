@@ -97,13 +97,29 @@ def background_load(pred: pd.DataFrame, movable) -> np.ndarray:
     return np.array(per_day.quantile(0.9).reindex(range(SLOTS)).fillna(0.0), dtype=float)
 
 
+def day_loads(pred: pd.DataFrame) -> Dict[pd.Timestamp, np.ndarray]:
+    """The home's measured load per 15-minute slot, for each day (kW)."""
+    dts = pd.to_datetime(pred["datetime"])
+    slot = ((dts.dt.hour * 60 + dts.dt.minute) // SLOT_MIN).to_numpy()
+    frame = pd.DataFrame({"day": dts.dt.normalize().to_numpy(), "slot": slot,
+                          "kw": pred["mains_kw"].astype(float).to_numpy()})
+    table = frame.groupby(["day", "slot"])["kw"].mean().unstack().reindex(columns=range(SLOTS)).fillna(0.0)
+    return {pd.Timestamp(d): np.array(row, dtype=float) for d, row in table.iterrows()}
+
+
 def _shift_suggestion(key: str, group: pd.DataFrame, profile: ApplianceProfile,
                       tariff: Tariff, prefs: HouseholdPrefs, days: float,
-                      load: Optional[np.ndarray] = None, cap_kw: Optional[float] = None) -> Optional[dict]:
+                      load: Optional[Dict[pd.Timestamp, np.ndarray]] = None,
+                      cap_kw: Optional[float] = None) -> Optional[dict]:
     """
     Best alternative time for the runs that currently fall in costly hours.
-    With `load` (kW already planned per 15-minute slot) and `cap_kw`, a time is
-    only offered if the home stays under the cap with this appliance running.
+
+    With `load` (each day's measured load per 15-minute slot, updated as runs
+    are moved) and `cap_kw`, a time is only offered if that day's load stays
+    under the cap with this run moved there.  Accepted moves update `load`, so
+    later runs and appliances are planned on top of them.  Among the cheapest
+    times, the one with the lowest resulting peak, then the one closest to the
+    current habit, is chosen.
     """
     moves = []
     for _, s in group.iterrows():
@@ -112,18 +128,30 @@ def _shift_suggestion(key: str, group: pd.DataFrame, profile: ApplianceProfile,
         avg_kw = s["kwh"] / (dur / 60.0)
         now_cost = tariff.run_cost(start, dur, avg_kw)
         options = feasible_starts(profile, dur, start, prefs)
-        if load is not None and cap_kw:
-            options = [o for o in options if float(load[_slots(o, dur)].max()) + avg_kw <= cap_kw]
+        day = pd.Timestamp(s["start"]).normalize()
+        base = None
+        if load is not None and day in load:
+            base = load[day].copy()
+            old = _slots(start, dur)
+            base[old] = np.maximum(base[old] - avg_kw, 0.0)          # the run leaves its old time
+            if cap_kw:
+                options = [o for o in options if float(base[_slots(o, dur)].max()) + avg_kw <= cap_kw]
         if not options:
             continue
         costs = [tariff.run_cost(o, dur, avg_kw) for o in options]
-        # Among the cheapest options pick the one closest to the current habit.
         cheapest = min(costs)
         near = [o for o, c in zip(options, costs) if c <= cheapest + 1e-9]
-        best = min(near, key=lambda o: abs(o - start))
+        if base is not None:
+            best = min(near, key=lambda o: (round(float(base[_slots(o, dur)].max()) + avg_kw, 3), abs(o - start)))
+        else:
+            best = min(near, key=lambda o: abs(o - start))
         if now_cost - cheapest > 0.01:
+            if base is not None:
+                base[_slots(best, dur)] += avg_kw
+                load[day] = base
             moves.append({"from": start, "to": best, "saving": now_cost - cheapest,
-                          "dur": dur, "kwh": s["kwh"], "now": now_cost, "new": cheapest, "kw": avg_kw})
+                          "dur": dur, "kwh": s["kwh"], "now": now_cost, "new": cheapest, "kw": avg_kw,
+                          "day": pd.Timestamp(s["start"]).normalize()})
     if not moves:
         return None
     m = pd.DataFrame(moves)
@@ -150,6 +178,8 @@ def _shift_suggestion(key: str, group: pd.DataFrame, profile: ApplianceProfile,
                         f"Rs. {m['now'].mean():.2f} now vs Rs. {m['new'].mean():.2f} moved "
                         f"= Rs. {saving_per_run:.2f} per run x {runs_per_month:.0f} runs/month"),
         "_reserve": (typical_to, dur, float(m["kw"].quantile(0.9))),
+        "moves": m[["day", "from", "to", "dur", "kw", "kwh"]].to_dict("records"),
+        "history_days": days,
     }
 
 
@@ -171,6 +201,8 @@ def _combined_routine(small: List[dict], profiles) -> Optional[dict]:
         "calculation": " + ".join(f"Rs. {s['monthly_saving_exact']:.1f}" for s in small)
                        + f" = Rs. {total:.1f} a month. " + " | ".join(s["calculation"] for s in small),
         "members": [s["appliance"] for s in small],
+        "moves": [dict(mv, appliance=s["appliance"]) for s in small for mv in s.get("moves", [])],
+        "history_days": small[0].get("history_days"),
     }
 
 
@@ -266,7 +298,7 @@ def recommend(pred: pd.DataFrame, sessions: pd.DataFrame,
     shiftable = [k for k, p in profiles.items()
                  if p.category == SHIFTABLE and tariff.tod_enabled and not sessions[sessions["appliance"] == k].empty]
     cap = (prefs.sanctioned_kw * prefs.load_margin) if prefs.sanctioned_kw else None
-    load = background_load(pred, shiftable) if (cap and shiftable) else None
+    load = day_loads(pred) if shiftable else None
     if shiftable:
         unconstrained = {k: _shift_suggestion(k, sessions[sessions["appliance"] == k], profiles[k],
                                               tariff, prefs, days) for k in shiftable}
@@ -281,10 +313,6 @@ def recommend(pred: pd.DataFrame, sessions: pd.DataFrame,
                                  f"{prefs.load_margin * 100:.0f}% of your {prefs.sanctioned_kw:g} kW "
                                  f"sanctioned load, so it is not suggested.")
                 continue
-            if load is not None:
-                to, dur, kw = s["_reserve"]
-                load = load.copy()
-                load[_slots(to, dur)] += kw
             candidates.append(s)
 
     for key, profile in profiles.items():
@@ -348,3 +376,102 @@ def explain_refusal(appliance_key: str, action: str,
         return (f"The {profile.name.lower()} is used when it is needed, so moving it to "
                 f"another time is not a practical suggestion. {profile.note}")
     return None
+
+
+# ----------------------------------------------------------------- plan check
+def validate_plan(pred: pd.DataFrame, sessions: pd.DataFrame, suggestions: List[dict],
+                  tariff: Optional[Tariff] = None, prefs: Optional[HouseholdPrefs] = None) -> dict:
+    """
+    Check the suggested plan against the household's own recent days and report
+    baseline versus optimised use, cost and peak load, per month.
+
+    Shifting a run moves it in time but does not change its units, so its
+    energy saving is zero by construction; the saving is in cost (cheaper
+    hours) and, where runs move out of busy hours, in peak load.  Setpoint and
+    timer tips save energy; those figures are estimates from BEE guidance and
+    are labelled as such.  Every moved run is re-checked against every limit.
+    """
+    tariff = tariff or Tariff()
+    prefs = prefs or HouseholdPrefs()
+    profiles = get_profiles(prefs)
+    dts = pd.to_datetime(pred["datetime"])
+    days = max(1.0, (dts.iloc[-1] - dts.iloc[0]).total_seconds() / 86400.0)
+    per_month = DAYS_PER_MONTH / days
+    rates = tariff.minute_rates()
+    minute_of_day = (dts.dt.hour * 60 + dts.dt.minute).to_numpy()
+    mains = pred["mains_kw"].to_numpy(dtype=float)
+    base_kwh = float(mains.sum() / 60.0)
+    base_cost = float((mains / 60.0 * rates[minute_of_day]).sum())
+
+    # Per-day 15-minute load, before and after moving the runs.
+    day_index = dts.dt.normalize()
+    slot = minute_of_day // SLOT_MIN
+    load = pd.DataFrame({"day": day_index, "slot": slot, "kw": mains}).groupby(["day", "slot"])["kw"].mean().unstack(fill_value=0.0)
+    after = load.copy()
+    moves = [dict(mv, appliance=mv.get("appliance", s["appliance"]))
+             for s in suggestions if s.get("kind") == "shift" for mv in s.get("moves", [])]
+    checks, shift_cost_saving = [], 0.0
+    cap = (prefs.sanctioned_kw * prefs.load_margin) if prefs.sanctioned_kw else None
+    for mv in moves:
+        profile = profiles.get(mv["appliance"])
+        start, to, dur, kw = int(mv["from"]), int(mv["to"]), int(mv["dur"]), float(mv["kw"])
+        problems = []
+        lo, hi = profile.allowed_hours[0] * 60, profile.allowed_hours[1] * 60
+        if not (lo <= to and to + dur <= hi):
+            problems.append("outside allowed hours")
+        if profile.noisy and any(_in_quiet(m, prefs.quiet_hours) for m in (to, to + dur - 1)):
+            problems.append("in quiet hours")
+        if profile.max_advance_min is not None and not (start - profile.max_advance_min <= to <= start):
+            problems.append("too early for the water to stay hot")
+        if profile.category != SHIFTABLE:
+            problems.append("not a shiftable appliance")
+        day = mv["day"]
+        if day in after.index:
+            for sl in _slots(start, dur):
+                after.loc[day, sl] = max(0.0, after.loc[day, sl] - kw)
+            for sl in _slots(to, dur):
+                after.loc[day, sl] = after.loc[day, sl] + kw
+        shift_cost_saving += tariff.run_cost(start, dur, kw) - tariff.run_cost(to, dur, kw)
+        checks.append({"appliance": profile.name, "from": _hhmm(start), "to": _hhmm(to), "minutes": dur,
+                       "ok": not problems, "problems": problems})
+    peak_before = float(load.max(axis=1).mean()) if not load.empty else 0.0
+    peak_after = float(after.max(axis=1).mean()) if not after.empty else 0.0
+    max_after = float(after.max().max()) if not after.empty else 0.0
+    # The plan may only add load where the home stays under the cap (or under
+    # what was already there before the plan).
+    raised = after > load + 1e-9
+    over = raised & (after > np.maximum(load, cap if cap is not None else np.inf) + 1e-6)
+    cap_ok = not bool(over.to_numpy().any())
+    cap_violations = int(over.to_numpy().sum())
+
+    # Energy-saving tips (estimates, not simulated).
+    est_kwh = 0.0
+    for s in suggestions:
+        if s.get("kind") == "duration" and s.get("appliance") == "ac":
+            rate = float(tariff.rate) or 1.0
+            est_kwh += float(s.get("monthly_saving_rs", 0)) / rate / per_month    # back to the history period
+    month = lambda x: round(x * per_month, 2)          # noqa: E731
+    shift_saving_m = month(shift_cost_saving)
+    est_saving_m = round(sum(float(s.get("monthly_saving_rs", 0)) for s in suggestions
+                             if s.get("kind") != "shift"), 2)
+    base_month_kwh, base_month_cost = month(base_kwh), month(base_cost)
+    opt_month_kwh = round(base_month_kwh - month(est_kwh), 2)
+    opt_month_cost = round(base_month_cost - shift_saving_m - est_saving_m, 2)
+    return {
+        "history_days": round(days, 1),
+        "baseline": {"kwh_month": base_month_kwh, "cost_month": base_month_cost, "avg_daily_peak_kw": round(peak_before, 2)},
+        "optimised": {"kwh_month": opt_month_kwh, "cost_month": opt_month_cost, "avg_daily_peak_kw": round(peak_after, 2)},
+        "shift": {"energy_saving_kwh_month": 0.0, "cost_saving_month": shift_saving_m, "runs_moved": len(moves)},
+        "estimated_tips": {"energy_saving_kwh_month": month(est_kwh), "cost_saving_month": est_saving_m,
+                           "label": "estimate from BEE guidance, not simulated"},
+        "energy_saving_kwh_month": round(base_month_kwh - opt_month_kwh, 2),
+        "energy_saving_pct": round((base_month_kwh - opt_month_kwh) / base_month_kwh * 100, 2) if base_month_kwh > 0 else 0.0,
+        "cost_saving_month": round(base_month_cost - opt_month_cost, 2),
+        "cost_saving_pct": round((base_month_cost - opt_month_cost) / base_month_cost * 100, 2) if base_month_cost > 0 else 0.0,
+        "peak_change_kw": round(peak_after - peak_before, 2),
+        "checks": checks,
+        "all_constraints_ok": all(c["ok"] for c in checks) and cap_ok,
+        "load_cap_kw": None if cap is None else round(cap, 2),
+        "load_cap_violations": cap_violations,
+        "max_load_after_kw": round(max_after, 2),
+    }
