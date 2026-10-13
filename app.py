@@ -1720,12 +1720,12 @@ def _meter_now_ts(date) -> pd.Timestamp:
 
 def run_meter_monitoring(household_id, owned, people, scenario, date):
     """Log the meter forecasts, record finished hours and check for overconsumption (once per hour)."""
-    import monitoring
     hour = now_minute() // 60
     mark = (household_id, date, scenario, tuple(owned), hour)
     if st.session_state.get("_monitor_mark") == mark:
         return st.session_state.get("_monitor_result")
     try:
+        import monitoring
         res = monitoring.run_check(get_db(), load_forecaster(), household_id, detected_history(date, scenario, owned),
                                    _meter_now_ts(date), owned, people=people, service=get_notification_service(),
                                    language=st.session_state.get("lang", "en"))
@@ -1742,8 +1742,8 @@ def run_meter_monitoring(household_id, owned, people, scenario, date):
 
 def render_overuse_banner(household_id):
     """The latest overconsumption alert of the last 24 hours, with its figures."""
-    import monitoring
     try:
+        import monitoring
         entry = monitoring.latest_alert(get_db(), household_id)
         state = get_db().get_store(household_id, monitoring.STATE_KEY) or {}
     except Exception:
@@ -2145,9 +2145,9 @@ def render_ensemble_settings():
 
 def render_alert_settings():
     """When to warn that the home is using more than forecast (saved per household)."""
-    import monitoring
     db, household_id = get_db(), current_household_id()
     try:
+        import monitoring
         cur = monitoring.AlertSettings.clean(db.get_store(household_id, monitoring.SETTINGS_KEY))
     except Exception:
         log.exception("Could not read alert settings")

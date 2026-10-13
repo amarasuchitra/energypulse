@@ -129,7 +129,7 @@ On a flat tariff no timing advice is given because moving use saves nothing.
 
 ## 8. Tests
 
-New: `test_monitoring.py` (12), `test_home_config.py` (13), `test_forecast_sim.py` (5);
+New: `test_monitoring.py` (12), `test_home_config.py` (12), `test_forecast_sim.py` (5);
 updated: `test_optimization.py` (9). Mapping to the spec's tests:
 
 | Spec test | Covered by |
