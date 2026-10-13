@@ -1999,6 +1999,26 @@ def render_sidebar():
     return st.session_state.sidebar_settings
 
 
+_APPLIANCE_WIDGETS = ("ap_qty_", "ap_hrs_", "ap_use_")
+
+
+def _reset_appliance_widgets() -> None:
+    """Forget the editor's input values.  The inputs are keyed by list position, so after a
+    delete, cancel or save they must be rebuilt from the list, not from what was typed before."""
+    for key in [k for k in st.session_state.keys() if isinstance(k, str) and k.startswith(_APPLIANCE_WIDGETS)]:
+        st.session_state.pop(key, None)
+
+
+def _appliances_for_compare(items) -> str:
+    """The list as it would be saved, so an untouched list never counts as changed."""
+    from home_config import validate_home_details
+    try:
+        clean = validate_home_details({"appliances": list(items or [])})[0]["appliances"]
+    except Exception:
+        clean = items
+    return json.dumps(clean, sort_keys=True, default=str)
+
+
 def _render_appliances_editor(hd: dict, lang: str) -> None:
     """
     Edit the household's appliances: add, remove, quantity, hours a day, usage.
@@ -2030,8 +2050,8 @@ def _render_appliances_editor(hd: dict, lang: str) -> None:
             else (typical or 0.0)
         hours = c2.number_input("Hours a day", 0.0, 24.0, hours_default, 0.5, key=f"ap_hrs_{household_id}_{i}",
                                 help=f"Typical: {typical:g} h" if typical else None)
-        if typical and abs(hours - typical) < 1e-9 and item.get("hours_per_day") in (None, ""):
-            item.pop("hours_per_day", None)               # left at the typical value
+        if item.get("hours_per_day") in (None, "") and abs(hours - (typical or 0.0)) < 1e-9:
+            item.pop("hours_per_day", None)               # left at the typical value (or not given)
         else:
             item["hours_per_day"] = float(hours)
         item["usage"] = c3.select_slider("Usage", ["Low", "Medium", "High"], value=item.get("usage", "Medium"),
@@ -2040,6 +2060,7 @@ def _render_appliances_editor(hd: dict, lang: str) -> None:
         if c4.button("🗑️", key=f"ap_del_{household_id}_{i}", help="Remove appliance", width="stretch",
                      disabled=len(draft) <= 1):
             draft.pop(i)
+            _reset_appliance_widgets()
             st.rerun()
 
     st.divider()
@@ -2060,7 +2081,7 @@ def _render_appliances_editor(hd: dict, lang: str) -> None:
             draft.append(catalog.item_for(t.key))
             st.rerun()
 
-    changed = json.dumps(draft, sort_keys=True, default=str) != json.dumps(saved_items, sort_keys=True, default=str)
+    changed = _appliances_for_compare(draft) != _appliances_for_compare(saved_items)
     if changed:
         st.caption("You have unsaved changes to your appliances.")
     save_col, cancel_col = st.columns(2)
@@ -2079,6 +2100,7 @@ def _render_appliances_editor(hd: dict, lang: str) -> None:
         st.session_state.home_details = hd
         for key in ("appl_draft", "home_state", "_warm"):
             st.session_state.pop(key, None)
+        _reset_appliance_widgets()
         st.cache_data.clear()                 # predictions and tips are worked out again from the new list
         log.info("Saved %d appliances for household %s", len(clean["appliances"]), household_id)
         notify("success", "Appliances saved. Forecasts and tips now use the new list."
@@ -2086,6 +2108,7 @@ def _render_appliances_editor(hd: dict, lang: str) -> None:
         st.rerun()
     if cancel_col.button("Cancel", key="ap_cancel", width="stretch", disabled=not changed):
         st.session_state.pop("appl_draft", None)
+        _reset_appliance_widgets()
         st.rerun()
 
 
