@@ -16,7 +16,7 @@ dataset (34,168 hourly rows, December 2006 – November 2010) and a trained
 
 ## Honest forecasts and load-aware scheduling (V4.4)
 
-- **Leak-free forecasting.** The next-hour model now forecasts from the past only and is compared with simple baselines on data it never saw: 0.286 kW error, 28% better than "next hour = this hour". The bill forecast is off by 5% on a 30-day total, against 15% for a recent average. Details in [MODEL_REPORT.md](MODEL_REPORT.md).
+- **Leak-free forecasting.** The next-hour model now forecasts from the past only and is compared with simple baselines on data it never saw: 0.285 kW error, 28% better than "next hour = this hour". The bill forecast is off by 5% on a 30-day total, against 15% for a recent average. Details in [MODEL_REPORT.md](MODEL_REPORT.md).
 - **Bill forecast on the right dates.** The next-month estimate and the calendar's upcoming days now line up with today's dates (they previously stayed in 2010), and uploads get a forecast from their own readings.
 - **Appliances planned together.** Shifting tips are planned jointly so moved appliances never stack above 85% of the sanctioned load (Bills & Safety settings), and several small moves are offered together when they add up. Tip generation is about 12x faster.
 - **Accuracy shown as it is.** The dashboard reports the measured error and the gain over the baseline instead of a "confidence" percentage.
@@ -436,7 +436,7 @@ Full method and results: **[MODEL_REPORT.md](MODEL_REPORT.md)** (generated from 
 
   | | Mean absolute error |
   |---|---|
-  | **Hybrid XGBoost + LSTM** | **0.286 kW** |
+  | **Hybrid XGBoost + LSTM** | **0.285 kW** |
   | XGBoost alone / LSTM alone | 0.288 / 0.309 kW |
   | Baseline "next hour = this hour" | 0.397 kW |
 
