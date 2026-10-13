@@ -2007,6 +2007,8 @@ def _reset_appliance_widgets() -> None:
     delete, cancel or save they must be rebuilt from the list, not from what was typed before."""
     for key in [k for k in st.session_state.keys() if isinstance(k, str) and k.startswith(_APPLIANCE_WIDGETS)]:
         st.session_state.pop(key, None)
+    # The browser also remembers a widget's value by its key; new keys make it start afresh.
+    st.session_state["appl_widget_ver"] = st.session_state.get("appl_widget_ver", 0) + 1
 
 
 def _appliances_for_compare(items) -> str:
@@ -2036,6 +2038,7 @@ def _render_appliances_editor(hd: dict, lang: str) -> None:
                  for i in saved_items]
         st.session_state["appl_draft"], st.session_state["appl_draft_for"] = draft, household_id
 
+    ver = st.session_state.get("appl_widget_ver", 0)
     if not draft:
         st.caption("No appliances yet. Add one below.")
     for i, item in enumerate(list(draft)):
@@ -2044,20 +2047,20 @@ def _render_appliances_editor(hd: dict, lang: str) -> None:
         st.markdown(f"**{item['name']}**  \n<small>{summary}</small>", unsafe_allow_html=True)
         c1, c2, c3, c4 = st.columns([1.1, 1.3, 1.6, 0.7])
         item["quantity"] = int(c1.number_input("How many", 1, 10, int(item.get("quantity", 1) or 1), 1,
-                                               key=f"ap_qty_{household_id}_{i}"))
+                                               key=f"ap_qty_{household_id}_{ver}_{i}"))
         typical = typical_hours(item)
         hours_default = float(item["hours_per_day"]) if item.get("hours_per_day") not in (None, "") \
             else (typical or 0.0)
-        hours = c2.number_input("Hours a day", 0.0, 24.0, hours_default, 0.5, key=f"ap_hrs_{household_id}_{i}",
+        hours = c2.number_input("Hours a day", 0.0, 24.0, hours_default, 0.5, key=f"ap_hrs_{household_id}_{ver}_{i}",
                                 help=f"Typical: {typical:g} h" if typical else None)
         if item.get("hours_per_day") in (None, "") and abs(hours - (typical or 0.0)) < 1e-9:
             item.pop("hours_per_day", None)               # left at the typical value (or not given)
         else:
             item["hours_per_day"] = float(hours)
         item["usage"] = c3.select_slider("Usage", ["Low", "Medium", "High"], value=item.get("usage", "Medium"),
-                                         key=f"ap_use_{household_id}_{i}",
+                                         key=f"ap_use_{household_id}_{ver}_{i}",
                                          help="Used when hours a day is not known.")
-        if c4.button("🗑️", key=f"ap_del_{household_id}_{i}", help="Remove appliance", width="stretch",
+        if c4.button("🗑️", key=f"ap_del_{household_id}_{ver}_{i}", help="Remove appliance", width="stretch",
                      disabled=len(draft) <= 1):
             draft.pop(i)
             _reset_appliance_widgets()
