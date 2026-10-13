@@ -14,14 +14,21 @@ dataset (34,168 hourly rows, December 2006 – November 2010) and a trained
 > meter feed. To use your own readings, upload a CSV — see
 > [Using your own data](#using-your-own-data).
 
+## Honest forecasts and load-aware scheduling (V4.4)
+
+- **Leak-free forecasting.** The next-hour model now forecasts from the past only and is compared with simple baselines on data it never saw: 0.286 kW error, 28% better than "next hour = this hour". The bill forecast is off by 5% on a 30-day total, against 15% for a recent average. Details in [MODEL_REPORT.md](MODEL_REPORT.md).
+- **Bill forecast on the right dates.** The next-month estimate and the calendar's upcoming days now line up with today's dates (they previously stayed in 2010), and uploads get a forecast from their own readings.
+- **Appliances planned together.** Shifting tips are planned jointly so moved appliances never stack above 85% of the sanctioned load (Bills & Safety settings), and several small moves are offered together when they add up. Tip generation is about 12x faster.
+- **Accuracy shown as it is.** The dashboard reports the measured error and the gain over the baseline instead of a "confidence" percentage.
+
 ## Sign-in, background jobs, meter API and forecast bands (V4.3)
 
 - **Keep me signed in for 30 days.** Ticking the box on the sign-in form stores a random token in a browser cookie (`ep_session`, `SameSite=Strict`, `Secure` on https). The server keeps only its SHA-256 hash, so a copied database cannot be used to sign in. Logging out revokes the token; without the box a sign-in lasts 8 hours (`auth.py`).
 - **Guests leave nothing behind.** Logging out of a guest session deletes the guest's home, readings, settings, bills and photos. Guests who just close the tab are removed by an hourly job after a day (`db.delete_household`, `db.purge_stale_guests`).
 - **Background jobs that work.** The daily brief (07:00), bill alerts (09:00), weekly summary (Monday 10:00) and guest clean-up run in the app's process with APScheduler. They work from the saved home setup, family members and replayed meter readings, so nobody needs to have the app open (`scheduler_jobs.py`). A free host that sleeps only runs them while awake.
 - **Meter API as a data source.** Besides the sample data and a CSV upload, Settings > Data can fetch readings from a smart-meter or utility API that returns JSON or CSV, with an optional bearer token kept only for the session. Addresses on private networks are refused unless `ENERGYPULSE_ALLOW_PRIVATE_API=1` is set, for example when the app runs at home next to a meter gateway (`data_source.fetch_meter_api`).
-- **90% forecast band.** The next-hour card shows a 5%-95% range from three quantile models (`models/quantile_model_{5,50,95}.pkl`), calibrated with conformal prediction. On the last 15% of the sample data, held out, the band covered 92.9% of hours (`models/quantile_meta.json`; retrain with `python train_quantiles.py`).
-- **Choose the model blend.** Settings > Forecast model: automatic weights (each model by 1 / its measured error) or a custom XGBoost share, remembered per household (`ensemble.py`).
+- **90% forecast band.** The next-hour card shows the range the next hour should fall in 9 times out of 10, from quantile models calibrated on held-out data (90.0% coverage on the test period; see MODEL_REPORT.md).
+- **Choose the model blend.** Settings > Forecast model: the blend chosen on validation data, or a custom XGBoost share, remembered per household (`ensemble.py`).
 - **Translations repaired.** About 25 Hindi, Kannada and Telugu strings on the data-source and setup screens were garbled and have been rewritten.
 
 ## When the model is not known: estimate, rating plate, web look-up (V4.2)
@@ -418,26 +425,32 @@ majorproject/
 
 ## How the model works
 
-- **Data**: the UCI household dataset, 1-minute readings aggregated to
-  **34,168 hourly rows**. The three `Sub_metering_*` columns are reported by the
-  source in **Wh per minute**; they are multiplied by 60 to get hourly Wh, which
-  is why the appliance breakdown no longer collapses into a single "Other" bar.
-- **Model inputs (10)**: the last 10 hours (`WINDOW_SIZE`) of
-  `Global_active_power`, `hour`, `day_of_week`, `is_weekend`,
-  `Global_reactive_power`, `Voltage`, `Global_intensity` and the three
-  sub-meters.
-- **Model**: an **XGBoost regressor blended with an LSTM**, weighted by
-  inverse MAE. Trained time-ordered on the first 80% of hours, evaluated on the
-  most recent 20%. Current metrics from `models/model_meta.pkl`:
-  - XGBoost MAE **0.0120**, LSTM MAE **0.3399**
-  - hybrid MAE **0.0163** at weights **0.966 / 0.034** (a flat 50/50 blend
-    scores 0.1697, roughly ten times worse)
-- **Honesty guards**: prediction is withheld unless every one of the 10 input
-  columns is present; appliance breakdown and optimization need all three
-  sub-meters. Missing inputs produce a localized, actionable message instead of
-  a number.
-- The LSTM is optional at inference. If it is unavailable or the dataset shape
-  is unsupported, the app falls back to XGBoost and records the reason.
+Full method and results: **[MODEL_REPORT.md](MODEL_REPORT.md)** (generated from `models/forecast_meta.json`).
+
+- **Data**: the UCI household dataset, 1-minute readings averaged to **34,168 hourly rows**
+  (December 2006 - November 2010). Split in time order: train 64%, validation 16%, test 20%.
+  Every choice is made on validation; the test period is only used to report results.
+- **Next hour**: XGBoost (80%) blended with an LSTM (20%), using only what is known before the
+  hour being forecast: the last day of readings, the same hour on previous days, rolling
+  statistics, the latest sub-meter and other meter readings, and the clock. On the test period:
+
+  | | Mean absolute error |
+  |---|---|
+  | **Hybrid XGBoost + LSTM** | **0.286 kW** |
+  | XGBoost alone / LSTM alone | 0.288 / 0.309 kW |
+  | Baseline "next hour = this hour" | 0.397 kW |
+
+  The forecast is **28% more accurate than that baseline**. The 90% range around it covered
+  **90.0%** of test hours (conformal calibration). Data without sub-meter readings uses an
+  XGBoost model trained on power alone (0.305 kW, 23% better than the baseline).
+- **Next month's bill**: a model of daily energy from the last 90 days. Over 198 test start
+  days, its 30-day total was off by **5.0%** on average, against 15.2% for "average of the last
+  7 days". Other homes' uploads use a variant without this home's seasons (**9.6%**).
+- **Earlier versions** fed the model the same hour's current and sub-meter readings, so its
+  reported 0.012 kW error measured a nowcast, not a forecast. That leak is removed and tested
+  (`test_prediction_pipeline.py`).
+- The LSTM loads only when the blend uses it; `ENERGYPULSE_DISABLE_LSTM=1` runs XGBoost alone.
+- Retrain with `python model.py` (about 13 minutes on a laptop CPU), then `python model_report.py`.
 
 ## Using your own data
 

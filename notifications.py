@@ -698,7 +698,12 @@ def load_prediction_stats(tariff_rate: float = 8.0) -> Dict[str, Any]:
             current = remap_to_current_dates(raw, last_n_days=90)
             if current is not None and not current.empty:
                 forecast_df = shift_forecast_to_current_dates(forecast_df, raw, current)
-        info = next_month_cost(forecast_df, tariff_rate)
+        # The forecast covers 62 days; only the next calendar month is billed.
+        from forecast import month_slice
+        start = pd.to_datetime(forecast_df["datetime"]).min()
+        nxt = start.normalize().replace(day=1) + pd.DateOffset(months=1)
+        month_df = month_slice(forecast_df, nxt.year, nxt.month)
+        info = next_month_cost(month_df if not month_df.empty else forecast_df, tariff_rate)
         return {
             "predicted_cost": _round2(info.get("total_cost") or 0),
             "predicted_kwh": _round2(info.get("total_kwh") or 0),

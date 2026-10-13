@@ -126,6 +126,10 @@ class HouseholdPrefs:
     dismissed: set = field(default_factory=set)  # suggestion ids the user rejected
     # Per-appliance overrides, e.g. {"geyser": {"max_advance_min": 120}}
     overrides: Dict[str, dict] = field(default_factory=dict)
+    # Moved appliances must keep the home's load under this share of the
+    # sanctioned load (on the bill), so suggestions never stack into a trip.
+    sanctioned_kw: Optional[float] = 3.0
+    load_margin: float = 0.85
 
 
 def get_profiles(prefs: Optional[HouseholdPrefs] = None) -> Dict[str, ApplianceProfile]:

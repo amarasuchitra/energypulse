@@ -32,7 +32,9 @@ instance with at least 1 GB of memory.
   restarts or goes to sleep. Sign up again before a demo, or attach a persistent disk.
 - **Set `ENERGYPULSE_SECRET`.** Without it a new key is generated on each restart and
   earlier seals and encrypted bills can no longer be verified or opened.
-- **Memory.** If the host stops the app for using too much memory, TensorFlow is the
-  cause; the app still runs with XGBoost alone if the LSTM model cannot load.
+- **Memory.** TensorFlow (for the LSTM) needs most of a 1 GB host. If the host stops the
+  app for using too much memory, set `ENERGYPULSE_DISABLE_LSTM = "1"` in Secrets: the
+  next-hour forecast then uses XGBoost alone, which is only slightly less accurate
+  (see `models/forecast_meta.json`).
 - **Light and dark mode** is a setting of the running server, so all visitors share it.
 - **First visit after a restart is slow** while the models load.

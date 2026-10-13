@@ -1,129 +1,138 @@
 """
-Test prediction pipeline components
+Forecast pipeline: leak-free features, trained artifacts, live forecasts and
+the honesty of the reported accuracy.
+
+Tests that need the trained XGBoost model are skipped when xgboost is not
+installed; CI installs it.
 """
-import pytest
-import numpy as np
-import pandas as pd
-import pickle
+import json
 import os
 
+import numpy as np
+import pandas as pd
+import pytest
+
+from forecast_features import (
+    MEASUREMENTS, TARGET, daily_energy, daily_features, hourly_features, hourly_training_set, to_hourly,
+)
+
 MODEL_DIR = "models"
-DATA_DIR = "data"
+META = os.path.join(MODEL_DIR, "forecast_meta.json")
 
-def test_xgb_model_loads():
-    """Test XGBoost model loads and can predict"""
-    path = os.path.join(MODEL_DIR, "xgboost_model.pkl")
-    assert os.path.exists(path), "XGBoost model file missing"
-    
-    with open(path, "rb") as f:
-        model = pickle.load(f)
-    
-    assert hasattr(model, "predict"), "Model missing predict method"
-    
-    # Test prediction with dummy features (9 features)
-    dummy_features = pd.DataFrame([{
-        "hour": 12,
-        "day_of_week": 2,
-        "is_weekend": 0,
-        "Global_reactive_power": 0.1,
-        "Voltage": 235.0,
-        "Global_intensity": 5.0,
-        "Sub_metering_1": 0.0,
-        "Sub_metering_2": 0.0,
-        "Sub_metering_3": 0.0,
-    }])
-    
-    pred = model.predict(dummy_features)
-    assert len(pred) == 1
-    assert np.isfinite(pred[0])
-    assert pred[0] >= 0  # Power should be non-negative
 
-def test_scaler_loads():
-    """Test scaler loads and transforms correctly"""
-    path = os.path.join(MODEL_DIR, "lstm_scaler.pkl")
-    assert os.path.exists(path), "Scaler file missing"
-    
-    with open(path, "rb") as f:
-        scaler = pickle.load(f)
-    
-    assert hasattr(scaler, "transform"), "Scaler missing transform method"
-    
-    # Test with 10 features (the scaler was fit on 10 features)
-    dummy_data = np.random.rand(10, 10).astype("float32")
-    scaled = scaler.transform(dummy_data)
-    assert scaled.shape == (10, 10)
+def _sample(hours=24 * 30, seed=0):
+    rng = np.random.default_rng(seed)
+    t = pd.date_range("2024-01-01", periods=hours, freq="h")
+    base = 1.0 + 0.6 * np.sin(2 * np.pi * t.hour / 24) + rng.gamma(2, 0.15, hours)
+    df = pd.DataFrame({"datetime": t, TARGET: base})
+    for c in MEASUREMENTS:
+        df[c] = rng.random(hours)
+    return df
 
-def test_meta_loads():
-    """Test meta file loads with expected keys"""
-    path = os.path.join(MODEL_DIR, "model_meta.pkl")
-    assert os.path.exists(path), "Meta file missing"
-    
-    with open(path, "rb") as f:
-        meta = pickle.load(f)
-    
-    required_keys = ["xgb_mae", "lstm_mae", "hybrid_mae", "hybrid_weights", 
-                     "feature_cols", "target", "window_size"]
-    for key in required_keys:
-        assert key in meta, f"Missing key in meta: {key}"
-    
-    # Check weights sum to ~1
-    w_xgb, w_lstm = meta["hybrid_weights"]
-    assert abs(w_xgb + w_lstm - 1.0) < 0.01
 
-def test_sample_data_exists():
-    """Test sample data files exist"""
-    assert os.path.exists(os.path.join(DATA_DIR, "cleaned_energy_data.csv"))
-    assert os.path.exists(os.path.join(DATA_DIR, "sample_meta.json"))
+def _meta():
+    with open(META, encoding="utf-8") as fh:
+        return json.load(fh)
 
-def test_predict_next_period_runs():
-    """Test predict_next_period function runs without error"""
-    from model import predict_next_period, FEATURE_COLS, TARGET, WINDOW_SIZE
-    
-    # Load models
-    with open(os.path.join(MODEL_DIR, "xgboost_model.pkl"), "rb") as f:
-        xgb_model = pickle.load(f)
-    with open(os.path.join(MODEL_DIR, "lstm_scaler.pkl"), "rb") as f:
-        scaler = pickle.load(f)
-    with open(os.path.join(MODEL_DIR, "model_meta.pkl"), "rb") as f:
-        meta = pickle.load(f)
-    
-    # Create dummy recent data (window_size + 10 rows)
-    recent_df = pd.DataFrame({
-        "datetime": pd.date_range("2024-01-01", periods=WINDOW_SIZE + 10, freq="h"),
-        "Global_active_power": np.random.uniform(0.5, 3.0, WINDOW_SIZE + 10),
-        "Global_reactive_power": np.random.uniform(0.05, 0.5, WINDOW_SIZE + 10),
-        "Voltage": np.random.uniform(220, 250, WINDOW_SIZE + 10),
-        "Global_intensity": np.random.uniform(2, 10, WINDOW_SIZE + 10),
-        "Sub_metering_1": np.random.uniform(0, 1, WINDOW_SIZE + 10),
-        "Sub_metering_2": np.random.uniform(0, 1, WINDOW_SIZE + 10),
-        "Sub_metering_3": np.random.uniform(0, 1, WINDOW_SIZE + 10),
-    })
-    recent_df["hour"] = recent_df["datetime"].dt.hour
-    recent_df["day_of_week"] = recent_df["datetime"].dt.dayofweek
-    recent_df["is_weekend"] = (recent_df["day_of_week"] >= 5).astype(int)
-    
-    live_row = recent_df.iloc[-1].to_dict()
-    
-    # Should not raise
-    hybrid, xgb_p, lstm_p, info = predict_next_period(
-        live_row, xgb_model, None, scaler, recent_df,
-        return_info=True, weights=meta.get("hybrid_weights")
-    )
-    
-    assert np.isfinite(hybrid)
-    assert hybrid >= 0
-    assert info["lstm_used"] == False  # LSTM is None
-    assert info["w_xgb"] == 1.0
 
-def test_hybrid_weights_are_sensible():
-    """Test that hybrid weights are reasonable"""
-    with open(os.path.join(MODEL_DIR, "model_meta.pkl"), "rb") as f:
-        meta = pickle.load(f)
-    
-    w_xgb, w_lstm = meta["hybrid_weights"]
-    # XGBoost should have higher weight (it's the working model)
-    assert w_xgb > w_lstm
-    assert w_xgb > 0.5
+# ------------------------------------------------------------- leak-free features
+def test_features_use_nothing_after_the_current_hour():
+    df = _sample()
+    h = to_hourly(df)
+    X = hourly_features(h)
+    t = 400
+    changed = h.copy()
+    changed.iloc[t + 1:] = changed.iloc[t + 1:] * 5 + 3        # rewrite the future, including the target hour
+    X2 = hourly_features(changed)
+    pd.testing.assert_series_equal(X.iloc[t], X2.iloc[t])
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+
+def test_training_target_is_the_next_hour():
+    df = _sample()
+    X, y, h = hourly_training_set(df)
+    for t in X.index[200:205]:
+        assert y.loc[t] == pytest.approx(h.loc[t + pd.Timedelta(hours=1), TARGET])
+        assert X.loc[t, "lag_0"] == pytest.approx(h.loc[t, TARGET])
+
+
+def test_missing_hours_stay_missing_not_shifted():
+    df = _sample().drop(index=range(300, 305))
+    h = to_hourly(df)
+    assert len(h) == 24 * 30 and h[TARGET].isna().sum() == 5
+
+
+def test_daily_features_use_only_the_last_90_days():
+    d = daily_energy(to_hourly(_sample(24 * 200)))
+    o = 150
+    F = daily_features(d, o, seasonal=False)
+    d2 = d.copy()
+    d2.iloc[:o - 89] = 999.0                                    # older than 90 days
+    d2.iloc[o + 1:] = 999.0                                     # the future
+    pd.testing.assert_frame_equal(F, daily_features(d2, o, seasonal=False))
+
+
+# ------------------------------------------------------------- honest metrics
+def test_reported_metrics_beat_the_baselines():
+    m = _meta()
+    mae = m["hourly"]["mae_kw"]
+    assert mae["hybrid"] < mae["persistence"] < mae["same_hour_yesterday"]
+    assert m["hourly"]["improvement_over_persistence_pct"] > 15
+    assert abs(m["hourly"]["interval"]["test_coverage"] - 0.90) < 0.03
+    for key in ("daily_seasonal", "daily_generic"):
+        t = m["daily"][key]["test"]["next_30_days"]
+        assert t["model_total_error_pct"] < t["baseline_last7_total_error_pct"]
+
+
+def test_choices_were_made_on_validation_not_test():
+    m = _meta()
+    assert m["blend"]["chosen_on"] == "validation MAE"
+    split = m["split"]
+    assert split["train_until"] < split["validation_until"] < split["test_until"]
+
+
+# ------------------------------------------------------------- live forecasts
+
+def _forecaster():
+    pytest.importorskip("xgboost")
+    from forecast import Forecaster
+    fc = Forecaster.load(MODEL_DIR, use_lstm=False)
+    assert fc.ready
+    return fc
+
+
+def test_live_forecast_matches_training_features():
+    fc = _forecaster()
+    from model import load_data
+    df = load_data()
+    X, y, h = hourly_training_set(df)
+    t = X.index[-300]
+    live = fc.next_hour(df[df["datetime"] <= t], w_lstm=0.0)
+    batch = float(fc.xgb.predict(X.loc[[t]].reindex(columns=fc.features))[0])
+    assert live["pred_kw"] == pytest.approx(max(batch, 0.0), rel=1e-6)
+    assert live["for_hour"] == t + pd.Timedelta(hours=1)
+    assert live["lower_kw"] <= live["pred_kw"] <= live["upper_kw"]
+
+
+def test_power_only_data_uses_the_power_only_model():
+    fc = _forecaster()
+    df = _sample()[["datetime", TARGET]]
+    out = fc.next_hour(df)
+    assert out["power_only"] is True and out["lstm_used"] is False
+    assert out["pred_kw"] >= 0 and out["lower_kw"] <= out["upper_kw"]
+
+
+def test_bill_forecast_covers_next_month():
+    fc = _forecaster()
+    from forecast import month_slice
+    df = _sample(24 * 60)
+    out = fc.next_days(df, seasonal=False)
+    assert out["day"].nunique() == 62 and (out["predicted_kwh"] >= 0).all()
+    nxt = pd.Timestamp(df["datetime"].max()).normalize().replace(day=1) + pd.DateOffset(months=1)
+    assert len(month_slice(out, nxt.year, nxt.month)) == 24 * nxt.days_in_month
+
+
+def test_sample_forecast_file_matches_columns_the_app_uses():
+    fc = pd.read_csv(os.path.join("data", "next_month_forecast.csv"), parse_dates=["datetime"])
+    assert {"datetime", "predicted_kw", "predicted_kwh", "day"} <= set(fc.columns)
+    assert fc["datetime"].min() > pd.Timestamp("2010-11-26")
+    assert len(fc) == 62 * 24

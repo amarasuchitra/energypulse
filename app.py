@@ -32,10 +32,9 @@ from replay import ReplaySimulator
 from appliances import get_appliance_breakdown
 from cost import daily_cost, weekly_cost, next_month_cost
 from optimize import detect_anomalies, generate_anomaly_tips, calendar_tips, whatif_simulator
-from model import (
-    load_data, predict_next_period, predict_next_period_v2,
-    FEATURE_COLS, TARGET, WINDOW_SIZE,
-)
+from model import load_data
+from forecast_features import TARGET
+from forecast import Forecaster, month_slice
 from data import (
     CLEAN_CSV, remap_to_current_dates, shift_forecast_to_current_dates,
     SAMPLE_META_PATH,
@@ -102,17 +101,7 @@ def render_language_selector(key="lang_select", centered=False):
 # ── Paths ───────────────────────────────────────────────────
 DATA_DIR = "data"
 MODEL_DIR = "models"
-# v2 models (enhanced with engineered features)
-XGB_PATH = os.path.join(MODEL_DIR, "xgboost_model_v2.pkl")
-LSTM_PATH = os.path.join(MODEL_DIR, "lstm_model_v2.keras")
-SCALER_PATH = os.path.join(MODEL_DIR, "lstm_scaler_v2.pkl")
-META_PATH = os.path.join(MODEL_DIR, "model_meta_v2.pkl")
-FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "feature_cols_v2.pkl")
-# fallback to v1
-XGB_PATH_V1 = os.path.join(MODEL_DIR, "xgboost_model.pkl")
-LSTM_PATH_V1 = os.path.join(MODEL_DIR, "lstm_model.keras")
-SCALER_PATH_V1 = os.path.join(MODEL_DIR, "lstm_scaler.pkl")
-META_PATH_V1 = os.path.join(MODEL_DIR, "model_meta.pkl")
+
 
 # ── Page config ───────────────────────────────────────────────
 st.set_page_config(
@@ -780,146 +769,55 @@ def render_data_source_panel():
             f'{T(code, **params)}</div>', unsafe_allow_html=True)
 
 
-@st.cache_resource
-def load_xgb():
-    """Load XGBoost model (v2 preferred, fallback to v1)."""
-    for path in [XGB_PATH, XGB_PATH_V1]:
-        if os.path.exists(path):
-            with open(path, "rb") as f:
-                return pickle.load(f)
-    return None
-
-@st.cache_resource
-def load_lstm():
-    from tensorflow import keras
-    for path in [LSTM_PATH, LSTM_PATH_V1]:
-        if os.path.exists(path):
-            try:
-                return keras.models.load_model(path)
-            except Exception:
-                continue
-    return None
-
-@st.cache_resource
-def load_scaler():
-    for path in [SCALER_PATH, SCALER_PATH_V1]:
-        if os.path.exists(path):
-            with open(path, "rb") as f:
-                return pickle.load(f)
-    return None
-
-@st.cache_resource
-def load_meta():
-    for path in [META_PATH, META_PATH_V1]:
-        if os.path.exists(path):
-            with open(path, "rb") as f:
-                return pickle.load(f)
-    return {}
-
-@st.cache_resource
-def load_feature_cols():
-    """Load engineered feature columns for v2 model."""
-    if os.path.exists(FEATURE_COLS_PATH):
-        with open(FEATURE_COLS_PATH, "rb") as f:
-            return pickle.load(f)
-    return None
-
-@st.cache_resource
-def load_quantile_models():
-    """Load quantile models for prediction intervals (5%, 50%, 95%)."""
-    quantile_models = {}
-    for q in [5, 50, 95]:
-        path = os.path.join(MODEL_DIR, f"quantile_model_{q}.pkl")
-        if os.path.exists(path):
-            try:
-                with open(path, "rb") as f:
-                    quantile_models[q / 100] = pickle.load(f)
-            except Exception as exc:          # a bad file must not stop the dashboard
-                print(f"Quantile model {q} not loaded: {exc}")
-    if 0.05 not in quantile_models or 0.95 not in quantile_models:
-        return None
-    return quantile_models
+@st.cache_resource(show_spinner=False)
+def load_forecaster():
+    """Next-hour and bill forecasters trained by model.py (see forecast.py).
+    ENERGYPULSE_DISABLE_LSTM=1 skips TensorFlow on hosts with little memory."""
+    no_lstm = os.environ.get("ENERGYPULSE_DISABLE_LSTM", "").strip().lower() in ("1", "true", "yes")
+    return Forecaster.load(MODEL_DIR, use_lstm=not no_lstm)
 
 
-@st.cache_resource
-def load_quantile_meta():
-    """Feature list, calibration offset and measured coverage of the quantile models."""
-    path = os.path.join(MODEL_DIR, "quantile_meta.json")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return {}
-
-
-def add_engineered_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Add engineered features matching model_v2.py for v2 model inference."""
-    df = df.copy()
-    df = df.sort_values("datetime").reset_index(drop=True)
-    
-    # Ensure datetime features
-    dt = pd.to_datetime(df["datetime"])
-    df["hour"] = dt.dt.hour
-    df["day_of_week"] = dt.dt.dayofweek
-    df["is_weekend"] = (df["day_of_week"] >= 5).astype(int)
-    df["month"] = dt.dt.month
-    df["day_of_month"] = dt.dt.day
-    df["week_of_year"] = dt.dt.isocalendar().week.astype(int)
-    
-    # Cyclical encoding
-    df["hour_sin"] = np.sin(2 * np.pi * df["hour"] / 24)
-    df["hour_cos"] = np.cos(2 * np.pi * df["hour"] / 24)
-    df["dow_sin"] = np.sin(2 * np.pi * df["day_of_week"] / 7)
-    df["dow_cos"] = np.cos(2 * np.pi * df["day_of_week"] / 7)
-    df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
-    df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
-    
-    # Lag features
-    for lag in [1, 2, 3, 6, 12, 24]:
-        df[f"power_lag_{lag}"] = df["Global_active_power"].shift(lag)
-        df[f"reactive_lag_{lag}"] = df["Global_reactive_power"].shift(lag)
-        df[f"voltage_lag_{lag}"] = df["Voltage"].shift(lag)
-        df[f"intensity_lag_{lag}"] = df["Global_intensity"].shift(lag)
-    
-    # Rolling statistics
-    for window in [3, 6, 12, 24]:
-        df[f"power_roll_mean_{window}"] = df["Global_active_power"].rolling(window, min_periods=1).mean()
-        df[f"power_roll_std_{window}"] = df["Global_active_power"].rolling(window, min_periods=1).std()
-        df[f"power_roll_min_{window}"] = df["Global_active_power"].rolling(window, min_periods=1).min()
-        df[f"power_roll_max_{window}"] = df["Global_active_power"].rolling(window, min_periods=1).max()
-        
-        for sm in ["Sub_metering_1", "Sub_metering_2", "Sub_metering_3"]:
-            df[f"{sm}_roll_mean_{window}"] = df[sm].rolling(window, min_periods=1).mean()
-            df[f"{sm}_roll_std_{window}"] = df[sm].rolling(window, min_periods=1).std()
-    
-    # Difference features
-    df["power_diff_1"] = df["Global_active_power"].diff(1)
-    df["power_diff_3"] = df["Global_active_power"].diff(3)
-    df["power_diff_24"] = df["Global_active_power"].diff(24)
-    
-    # Interaction features
-    df["hour_x_weekend"] = df["hour"] * df["is_weekend"]
-    df["intensity_x_voltage"] = df["Global_intensity"] * df["Voltage"]
-    df["reactive_x_intensity"] = df["Global_reactive_power"] * df["Global_intensity"]
-    
-    # Sub-metering ratios
-    total_sm = df["Sub_metering_1"] + df["Sub_metering_2"] + df["Sub_metering_3"]
-    df["sm1_ratio"] = df["Sub_metering_1"] / total_sm.replace(0, np.nan)
-    df["sm2_ratio"] = df["Sub_metering_2"] / total_sm.replace(0, np.nan)
-    df["sm3_ratio"] = df["Sub_metering_3"] / total_sm.replace(0, np.nan)
-    
-    # Fill NaN from lags/rolling
-    df = df.bfill().ffill().fillna(0)
-    
-    return df
-
-
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def load_forecast():
+    """The bundled sample's 62-day forecast, on its real (2010) dates."""
     path = os.path.join(DATA_DIR, "next_month_forecast.csv")
     if os.path.exists(path):
         return pd.read_csv(path, parse_dates=["datetime"])
     return pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _upload_forecast(signature, data):
+    return load_forecaster().next_days(data, seasonal=False)
+
+
+def build_forecast_df(source, raw_data):
+    """
+    Hourly forecast for the coming 62 days, on the same dates as the readings shown.
+
+    The sample uses its precomputed forecast (household-specific model, real
+    dates), moved forward by exactly the shift applied to its readings.  Any
+    other data gets a forecast from its own recent use (generic model).
+    """
+    if raw_data is None or raw_data.empty:
+        return pd.DataFrame()
+    if source.is_sample:
+        fc = load_forecast()
+        original_end = (source.original_range or (None, None))[1]
+        if fc.empty or not original_end:
+            return pd.DataFrame()
+        fc = fc.copy()
+        shift = pd.to_datetime(raw_data["datetime"]).max() - pd.Timestamp(original_end)
+        fc["datetime"] = pd.to_datetime(fc["datetime"]) + shift
+        fc["day"] = fc["datetime"].dt.date
+        return fc
+    data = raw_data[["datetime", TARGET]].copy()
+    signature = (source.kind, source.label, len(data), str(data["datetime"].max()))
+    try:
+        return _upload_forecast(signature, data)
+    except Exception as exc:
+        print(f"Bill forecast unavailable: {exc}")
+        return pd.DataFrame()
 
 
 def compute_scaling_factor(home_details):
@@ -1018,7 +916,7 @@ def sign_out():
             print(f"Guest cleanup failed: {exc}")
     for k in ["auth", "home_details", "simulator", "onboard_data", "onboard_step", "sidebar_settings",
               "page", "bills", "bill_seen", "home_state", "nilm_dismissed", "data_upload", "ensemble_setting",
-              "data_upload_sig", "data_upload_error", "data_api"]:
+              "data_upload_sig", "data_upload_error", "data_api", "sanctioned_kw"]:
         st.session_state.pop(k, None)
 
 
@@ -2042,12 +1940,25 @@ def ensemble_setting() -> dict:
     return st.session_state.ensemble_setting
 
 
-def forecast_weights(meta) -> tuple:
-    return resolve_weights(ensemble_setting(), (meta or {}).get("hybrid_weights"))
+def _trained_blend(fc) -> tuple:
+    b = fc.meta.get("blend", {})
+    return float(b.get("w_xgb", 1.0)), float(b.get("w_lstm", 0.0))
+
+
+def forecast_lstm_weight(fc):
+    """LSTM share for the next-hour forecast: None keeps the blend chosen in training."""
+    setting = ensemble_setting()
+    if setting["mode"] != "custom" or not fc.lstm_available:
+        return None
+    return resolve_weights(setting, _trained_blend(fc))[1]
 
 
 def render_ensemble_settings():
-    meta = load_meta() or {}
+    fc = load_forecaster()
+    val = fc.meta.get("hourly", {}).get("validation_mae_kw", {})
+    if not fc.lstm_available:
+        st.caption(T("ens_xgb_only"))
+        return
     setting = dict(ensemble_setting())
     modes = ["auto", "custom"]
     mode = st.radio(T("ens_mode"), modes, index=modes.index(setting["mode"]),
@@ -2059,10 +1970,10 @@ def render_ensemble_settings():
         st.caption(T("ens_custom_caption", x=share, l=100 - share))
     else:
         new = {"mode": "auto", "xgb_share": setting["xgb_share"]}
-        w_x, w_l = resolve_weights(new, meta.get("hybrid_weights"))
+        w_x, w_l = resolve_weights(new, _trained_blend(fc))
         st.caption(T("ens_auto_caption", x=round(w_x * 100), l=round(w_l * 100),
-                     xm=f"{float(meta.get('xgb_mae', 0) or 0):.3f}",
-                     lm=f"{float(meta.get('lstm_mae', 0) or 0):.3f}"))
+                     xm=f"{float(val.get('xgboost') or 0):.3f}",
+                     lm=f"{float(val.get('lstm') or 0):.3f}"))
     if new != setting:
         st.session_state.ensemble_setting = clean_setting(new)
         try:
@@ -2609,11 +2520,8 @@ def _main_dashboard_inner():
     with st.spinner(T("spinner_preparing")):
         source = get_data_source()
         raw_data = active_dataframe()
-        xgb_model = load_xgb()
-        lstm_model = load_lstm()
-        scaler = load_scaler()
-        meta = load_meta()
-        forecast_df = load_forecast()
+        forecaster = load_forecaster()
+        forecast_df = build_forecast_df(source, raw_data)
 
     if raw_data is None or raw_data.empty:
         st.error(T("src_upload_fail", reason=T("src_need_power")))
@@ -2623,18 +2531,26 @@ def _main_dashboard_inner():
     can_predict = src_info["caps"].get("prediction", {}).get("enabled", False)
     can_appliances = src_info["caps"].get("appliances", {}).get("enabled", False)
 
-    full_data = raw_data
-    if not forecast_df.empty and can_predict:
-        forecast_df = shift_forecast_to_current_dates(forecast_df, raw_data, full_data)
-
-    full_data = full_data.copy()
+    full_data = raw_data.copy()
     full_data["Global_active_power"] = full_data["Global_active_power"] * sf
     if not forecast_df.empty:
+        forecast_df = forecast_df.copy()
         forecast_df["predicted_kw"] = forecast_df["predicted_kw"] * sf
         forecast_df["predicted_kwh"] = forecast_df["predicted_kwh"] * sf
 
     sim = get_simulator()
-    hybrid_mae = meta.get("hybrid_mae", 0.15)
+    # "Next month" is the calendar month after the newest reading (for the sample,
+    # that is next month on today's calendar).
+    newest = pd.to_datetime(raw_data["datetime"]).max()
+    next_month_start = (newest.normalize().replace(day=1) + pd.DateOffset(months=1))
+    fc_hourly = forecaster.meta.get("hourly", {})
+    if "sanctioned_kw" not in st.session_state:          # the scheduler keeps moves under it
+        try:
+            stored = get_db().get_store(household_id, "toolkit", {}) or {}
+            st.session_state["sanctioned_kw"] = float(stored.get("sanctioned_kw", 3.0))
+        except Exception:
+            st.session_state["sanctioned_kw"] = 3.0
+    hybrid_mae = fc_hourly.get("mae_kw", {}).get("hybrid") or 0.3
 
     # Load previous simulation history from DB and combine with current replay
     if "sim_history_loaded" not in st.session_state:
@@ -2702,84 +2618,54 @@ def _main_dashboard_inner():
         st.info(T("getting_ready"))
         return
 
-    replay_window_raw = sim.get_window(WINDOW_SIZE + 10)
-
-    # Load v2 models and features
-    feature_cols = load_feature_cols()
-    quantile_models = load_quantile_models()
-    use_v2 = feature_cols is not None and xgb_model is not None
-
-    # Predict on the raw readings, then apply the household scaling factor
-    # once to the outputs. Pre-scaling the inputs would double-scale the LSTM,
-    # which consumes Global_active_power as one of its input features.
-    if can_predict and use_v2:
-        # Prepare data with engineered features for v2 model
-        hist_df = add_engineered_features(replay_window_raw)
-        live_df = add_engineered_features(pd.DataFrame([live_row]))
-        live_row_v2 = live_df.iloc[0].to_dict()
-        
-        pred_kw, xgb_p, lstm_p, pred_info = predict_next_period_v2(
-            live_row_v2, xgb_model, lstm_model, scaler, hist_df,
-            feature_cols, quantile_models,
-            return_info=True, weights=forecast_weights(meta),
-        )
-    elif can_predict:
-        pred_kw, xgb_p, lstm_p, pred_info = predict_next_period(
-            live_row, xgb_model, lstm_model, scaler, replay_window_raw,
-            return_info=True, weights=forecast_weights(meta),
-        )
+    # Next-hour forecast: the household's raw readings up to the "current"
+    # hour go in; the household scaling factor is applied once to the outputs.
+    nh = None
+    if can_predict and forecaster.ready and live_row:
+        row_t = live_row.get("datetime")
+        upto = raw_data
+        if row_t is not None and not pd.isna(row_t):
+            upto = raw_data[pd.to_datetime(raw_data["datetime"]) <= pd.Timestamp(row_t)]
+        try:
+            nh = forecaster.next_hour(upto, w_lstm=forecast_lstm_weight(forecaster))
+        except Exception as exc:
+            print(f"Next-hour forecast failed: {exc}")
+            nh = None
+    if nh:
+        pred_kw = nh["pred_kw"] * sf
+        xgb_p = nh["xgb_kw"] * sf
+        lstm_p = nh["lstm_kw"] * sf if nh["lstm_kw"] is not None else None
+        pred_info = {"lstm_used": nh["lstm_used"], "w_xgb": nh["w_xgb"], "w_lstm": nh["w_lstm"],
+                     "improvement_pct": nh.get("improvement_pct"),
+                     "persistence_mae": nh.get("persistence_mae_kw")}
+        if nh["lower_kw"] is not None:
+            lower, upper = nh["lower_kw"] * sf, nh["upper_kw"] * sf
+            pred_info.update(pi_lower=lower, pi_upper=upper, pi_coverage=nh.get("coverage"))
+        else:
+            lower, upper = max(0.0, pred_kw - hybrid_mae * sf), pred_kw + hybrid_mae * sf
     else:
         pred_kw, xgb_p, lstm_p = gap, None, None
-        pred_info = {"lstm_used": False, "lstm_reason": "unsupported_dataset",
-                     "w_xgb": 1.0, "w_lstm": 0.0}
-    pred_kw *= sf
-    if xgb_p is not None:
-        xgb_p *= sf
-    if lstm_p is not None:
-        lstm_p *= sf
-    
-    # 5%-95% prediction band from the calibrated quantile models, when present.
-    q_meta = load_quantile_meta()
-    q_cols = q_meta.get("feature_cols") or (feature_cols if use_v2 else None)
-    band = None
-    if quantile_models and can_predict and q_cols:
-        try:
-            if use_v2 and feature_cols and q_cols == feature_cols:
-                X_live = add_engineered_features(pd.DataFrame([live_row]))[q_cols].iloc[[0]]
-            else:
-                X_live = pd.DataFrame([{c: float(live_row.get(c, 0) or 0) for c in q_cols}],
-                                      columns=q_cols)
-            lo_q = float(quantile_models[0.05].predict(X_live)[0])
-            hi_q = float(quantile_models[0.95].predict(X_live)[0])
-            offset = float(q_meta.get("conformal_offset_kw", 0.0))
-            lo_q, hi_q = min(lo_q, hi_q) - offset, max(lo_q, hi_q) + offset
-            # Centre the band on the ensemble forecast actually shown.
-            centre_shift = pred_kw - float(quantile_models[0.5].predict(X_live)[0]) * sf \
-                if 0.5 in quantile_models else 0.0
-            band = (max(0.0, lo_q * sf + centre_shift), max(0.0, hi_q * sf + centre_shift))
-        except Exception as exc:
-            print(f"Prediction band unavailable: {exc}")
-            band = None
-    if band is not None:
-        lower, upper = band
-        pred_info["pi_lower"] = lower
-        pred_info["pi_upper"] = upper
-        pred_info["pi_coverage"] = q_meta.get("pi_coverage", 0.9)
-        uncertainty = (upper - lower) / 2.0
-    else:
-        uncertainty = hybrid_mae * sf
-        lower = max(0, pred_kw - uncertainty)
-        upper = pred_kw + uncertainty
+        pred_info = {"lstm_used": False, "w_xgb": 1.0, "w_lstm": 0.0}
+        lower, upper = max(0.0, pred_kw - hybrid_mae * sf), pred_kw + hybrid_mae * sf
+    uncertainty = (upper - lower) / 2.0
 
-    history = sim.get_full_history()
+    # Costs for today and the week use every reading up to the current hour
+    # (full_data is already scaled), not only what the replay has shown so far.
+    row_t = live_row.get("datetime") if live_row else None
+    if row_t is not None and not pd.isna(row_t):
+        history = full_data[pd.to_datetime(full_data["datetime"]) <= pd.Timestamp(row_t)].copy()
+    else:
+        replayed = sim.get_full_history()
+        history = replayed.copy() if not replayed.empty else replayed
+        if not history.empty:
+            history["Global_active_power"] = history["Global_active_power"] * sf
     if not history.empty:
-        history = history.copy()
-        history["Global_active_power"] = history["Global_active_power"] * sf
         
-        # Save replay history to DB periodically (every 50 rows)
+        # Save replay history to DB periodically (every 50 rows), unscaled, so it
+        # is not scaled a second time when it is replayed in a later session.
         if rows_played > 0 and rows_played % 50 == 0:
             db = get_db()
-            db.save_simulation_history(household_id, history)
+            db.save_simulation_history(household_id, sim.get_full_history())
         
         latest_date = history["datetime"].dt.date.iloc[-1]
         today_info = daily_cost(history, str(latest_date), tariff_rate,
@@ -2787,8 +2673,8 @@ def _main_dashboard_inner():
         week_start_date = latest_date - pd.Timedelta(days=6)
         week_info = weekly_cost(history, str(week_start_date), tariff_rate,
                                 tuple(peak_morning), tuple(peak_evening))
-        nm_info = next_month_cost(forecast_df, tariff_rate,
-                                  tuple(peak_morning), tuple(peak_evening))
+        nm_info = next_month_cost(month_slice(forecast_df, next_month_start.year, next_month_start.month),
+                                  tariff_rate, tuple(peak_morning), tuple(peak_evening))
     else:
         today_info = {"total_cost": 0, "total_kwh": 0}
         week_info = {"total_cost": 0, "pct_change": 0}
@@ -2888,16 +2774,18 @@ def _main_dashboard_inner():
                     legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1)))
                 st.plotly_chart(fig_next, width="stretch", key="overview_next_hour")
         with side_col:
-            confidence = max(0, min(100, (1 - uncertainty / max(pred_kw, 0.01)) * 100))
-            next_month_start = local_now().normalize().replace(day=1) + pd.DateOffset(months=1)
+            base_mae = fc_hourly.get("mae_kw", {}).get("persistence")
+            gain = fc_hourly.get("improvement_over_persistence_pct")
+            accuracy_text = (T("cap_forecast_vs_base", pct=f"{gain:.0f}", base=f"±{base_mae * sf:.2f}")
+                             if base_mae and gain is not None else "")
             model_name = T("pred_model_hybrid" if pred_info.get("lstm_used") else "pred_model_xgb_only")
             st.markdown(
                 f"<div class='ep-stat'><small>{T('card_next_month')}</small>"
                 f"<strong>Rs. {fmt_rs(nm_info['total_cost'])}</strong>"
                 f"<span>{T('card_projected_for', month=format_localized_month(next_month_start))}</span></div>"
                 f"<div class='ep-stat'><small>{T('card_smart_forecast')}</small>"
-                f"<strong>{confidence:.0f}%</strong>"
-                f"<span>{model_name}. {T('cap_forecast_mae', mae=f'{hybrid_mae:.3f}')}</span></div>",
+                f"<strong>&plusmn;{hybrid_mae * sf:.2f} kW</strong>"
+                f"<span>{model_name}. {accuracy_text}</span></div>",
                 unsafe_allow_html=True)
         st.caption(source_text)
         st.markdown(f"""<div class="disc"><p>{T('about_demo')}</p></div>""", unsafe_allow_html=True)
@@ -3056,7 +2944,7 @@ def _main_dashboard_inner():
                 language=st.session_state.get("lang", "en"),
                 tariff_rate=tariff_rate,
                 history=history,
-                forecast_df=forecast_df,
+                forecast_df=month_slice(forecast_df, next_month_start.year, next_month_start.month),
             )
 
     if page == "household":

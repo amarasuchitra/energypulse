@@ -201,11 +201,13 @@ TRANSLATIONS = {
         "ens_auto": "Automatic (by measured accuracy)",
         "ens_custom": "Set it myself",
         "ens_share": "XGBoost share (%)",
-        "ens_auto_caption": "Automatic weights: XGBoost {x}%, LSTM {l}%. Measured error: XGBoost {xm} kW, LSTM {lm} kW.",
+        "ens_auto_caption": "Automatic weights, chosen on validation data: XGBoost {x}%, LSTM {l}%. Validation error: XGBoost {xm} kW, LSTM {lm} kW.",
         "ens_custom_caption": "Forecast = {x}% XGBoost + {l}% LSTM. If the LSTM is unavailable, XGBoost is used alone.",
-        "card_smart_forecast": "Smart forecast",
+        "card_smart_forecast": "Forecast error",
+        "ens_xgb_only": "Only the XGBoost model is installed here, so there is nothing to blend.",
+        "cap_forecast_vs_base": "Average error on hours the model never saw: {pct}% lower than assuming the next hour repeats this one ({base} kW).",
         "pred_model_hybrid": "Hybrid: XGBoost + LSTM",
-        "pred_model_xgb_only": "XGBoost only (LSTM warming up)",
+        "pred_model_xgb_only": "XGBoost",
         "cap_forecast_mae": "Average hybrid error \u00b1 {mae} kW",
         "card_today_cost": "Today's Cost",
         "card_kwh_today": "{kwh} kWh used today",
@@ -287,7 +289,7 @@ TRANSLATIONS = {
         "about_demo": ("<strong>About this demo:</strong> Your dashboard uses smart predictions "
                        "trained on household energy data to estimate usage and costs. "
                        "All readings are simulated for demonstration. "
-                       "Predictions get more accurate as more data is collected."),
+                       "The accuracy shown was measured on the last part of the recording, which the models never saw during training."),
         # Additional translations for optimize.py and hardcoded strings
         "rate_hint_avg": "Not sure? The average residential rate in India is <strong style=\"color:#4A6741;\">Rs. 6-8/kWh</strong>. Check your latest electricity bill for the exact number.",
         "tip_no_anomalies": "No anomalies detected in the recent data. Usage is within normal patterns.",
@@ -478,11 +480,13 @@ TRANSLATIONS = {
         "ens_auto": "स्वचालित (मापी गई सटीकता से)",
         "ens_custom": "मैं खुद तय करूँ",
         "ens_share": "XGBoost हिस्सा (%)",
-        "ens_auto_caption": "स्वचालित भार: XGBoost {x}%, LSTM {l}%। मापी गई त्रुटि: XGBoost {xm} kW, LSTM {lm} kW।",
+        "ens_auto_caption": "स्वचालित भार, सत्यापन डेटा पर चुने गए: XGBoost {x}%, LSTM {l}%। सत्यापन त्रुटि: XGBoost {xm} kW, LSTM {lm} kW।",
         "ens_custom_caption": "पूर्वानुमान = {x}% XGBoost + {l}% LSTM। LSTM उपलब्ध न हो तो केवल XGBoost इस्तेमाल होता है।",
-        "card_smart_forecast": "स्मार्ट पूर्वानुमान",
+        "card_smart_forecast": "पूर्वानुमान त्रुटि",
+        "ens_xgb_only": "यहाँ केवल XGBoost मॉडल स्थापित है, इसलिए मिलाने को कुछ नहीं है।",
+        "cap_forecast_vs_base": "मॉडल द्वारा कभी न देखे गए घंटों पर औसत त्रुटि: यह मानने से {pct}% कम कि अगला घंटा इसी घंटे जैसा होगा ({base} kW)।",
         "pred_model_hybrid": "हाइब्रिड: XGBoost + LSTM",
-        "pred_model_xgb_only": "केवल XGBoost (LSTM शुरू हो रहा है)",
+        "pred_model_xgb_only": "XGBoost",
         "cap_forecast_mae": "औसत हाइब्रिड त्रुटि ± {mae} kW",
         "card_today_cost": "आज की लागत",
         "card_kwh_today": "{kwh} kWh आज उपयोग हुई",
@@ -557,7 +561,7 @@ TRANSLATIONS = {
         "about_demo": ("<strong>इस डेमो के बारे में:</strong> आपका डैशबोर्ड घरेलू ऊर्जा डेटा पर "
                        "प्रशिक्षित स्मार्ट मॉडल से खपत और लागत का अनुमान लगाता है। "
                        "सभी रीडिंग प्रदर्शन के लिए सिम्युलेटेड हैं। "
-                       "अधिक डेटा मिलने पर अनुमान और सटीक होते जाते हैं।"),
+                       "दिखाई गई सटीकता रिकॉर्डिंग के अंतिम हिस्से पर मापी गई है, जिसे मॉडलों ने प्रशिक्षण में कभी नहीं देखा।"),
         "rate_hint_avg": "निश्चित नहीं? भारत में औसत आवासीय दर <strong style=\"color:#4A6741;\">Rs. 6-8/kWh</strong> है। सटीक संख्या के लिए अपने नवीनतम विद्युत बिल की जांच करें।",
         "tip_no_anomalies": "हाल ही के डेटा में कोई विसंगति नहीं पाई गई। उपयोग सामान्य पैटर्न के भीतर है।",
         "tip_anomaly_usage_high": "{appliance} का उपयोग {date} को {period} पर असामान्य रूप से अधिक था (वास्तविक: {usage:.2f} kW बनाम सामान्य: {mean:.2f} kW) — इसे ऑफ-पीक घंटों में स्थानांतरित करने से इस महीने लगभग Rs. {saving:.0f} की बचत हो सकती है।",
@@ -747,11 +751,13 @@ TRANSLATIONS = {
         "ens_auto": "ಸ್ವಯಂಚಾಲಿತ (ಅಳೆದ ನಿಖರತೆಯಿಂದ)",
         "ens_custom": "ನಾನೇ ಹೊಂದಿಸುತ್ತೇನೆ",
         "ens_share": "XGBoost ಪಾಲು (%)",
-        "ens_auto_caption": "ಸ್ವಯಂಚಾಲಿತ ತೂಕ: XGBoost {x}%, LSTM {l}%. ಅಳೆದ ದೋಷ: XGBoost {xm} kW, LSTM {lm} kW.",
+        "ens_auto_caption": "ಸ್ವಯಂಚಾಲಿತ ತೂಕ, ಪರಿಶೀಲನಾ ಡೇಟಾದಲ್ಲಿ ಆಯ್ಕೆ: XGBoost {x}%, LSTM {l}%. ಪರಿಶೀಲನಾ ದೋಷ: XGBoost {xm} kW, LSTM {lm} kW.",
         "ens_custom_caption": "ಮುನ್ಸೂಚನೆ = {x}% XGBoost + {l}% LSTM. LSTM ಲಭ್ಯವಿಲ್ಲದಿದ್ದರೆ XGBoost ಮಾತ್ರ ಬಳಸಲಾಗುತ್ತದೆ.",
-        "card_smart_forecast": "ಸ್ಮಾರ್ಟ್ ಮುನ್ಸೂಚನೆ",
+        "card_smart_forecast": "ಮುನ್ಸೂಚನೆ ದೋಷ",
+        "ens_xgb_only": "ಇಲ್ಲಿ XGBoost ಮಾದರಿ ಮಾತ್ರ ಇದೆ, ಆದ್ದರಿಂದ ಬೆರೆಸಲು ಏನೂ ಇಲ್ಲ.",
+        "cap_forecast_vs_base": "ಮಾದರಿ ಎಂದೂ ನೋಡದ ಗಂಟೆಗಳಲ್ಲಿ ಸರಾಸರಿ ದೋಷ: ಮುಂದಿನ ಗಂಟೆ ಈ ಗಂಟೆಯಂತೆಯೇ ಇರುತ್ತದೆ ಎಂದು ಊಹಿಸುವುದಕ್ಕಿಂತ {pct}% ಕಡಿಮೆ ({base} kW).",
         "pred_model_hybrid": "ಹೈಬ್ರಿಡ್: XGBoost + LSTM",
-        "pred_model_xgb_only": "XGBoost ಮಾತ್ರ (LSTM ಆರಂಭವಾಗುತ್ತಿದೆ)",
+        "pred_model_xgb_only": "XGBoost",
         "cap_forecast_mae": "ಸರಾಸರಿ ಹೈಬ್ರಿಡ್ ದೋಷ ± {mae} kW",
         "card_today_cost": "ಇಂದಿನ ವೆಚ್ಚ",
         "card_kwh_today": "{kwh} kWh ಇಂದು ಬಳಕೆಯಾಗಿದೆ",
@@ -826,7 +832,7 @@ TRANSLATIONS = {
         "about_demo": ("<strong>ಈ ಡೆಮೊ ಬಗ್ಗೆ:</strong> ನಿಮ್ಮ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್ ಗೃಹ ಶಕ್ತಿ ಡೇಟಾದ ಮೇಲೆ ತರಬೇತಿ "
                        "ಪಡೆದ ಸ್ಮಾರ್ಟ್ ಮಾದರಿಗಳಿಂದ ಬಳಕೆ ಮತ್ತು ವೆಚ್ಚವನ್ನು ಅಂದಾಜು ಮಾಡುತ್ತದೆ. "
                        "ಎಲ್ಲಾ ಓದುಗಳು ಪ್ರದರ್ಶನಕ್ಕಾಗಿ ಸಿಮ್ಯುಲೇಟೆಡ್ ಆಗಿವೆ. "
-                       "ಹೆಚ್ಚು ಡೇಟಾ ಬಂದಂತೆ ಮುನ್ಸೂಚನೆಗಳು ಹೆಚ್ಚು ನಿಖರವಾಗುತ್ತವೆ."),
+                       "ತೋರಿಸಿದ ನಿಖರತೆಯನ್ನು ದಾಖಲೆಯ ಕೊನೆಯ ಭಾಗದಲ್ಲಿ ಅಳೆಯಲಾಗಿದೆ, ಅದನ್ನು ಮಾದರಿಗಳು ತರಬೇತಿಯಲ್ಲಿ ಎಂದೂ ನೋಡಿಲ್ಲ."),
         "rate_hint_avg": "ಖಚಿತವಿಲ್ಲವೇ? ಭಾರತದಲ್ಲಿ ಸರಾಸರಿ ಆವಾಸೀಯ ದರ <strong style=\"color:#4A6741;\">Rs. 6-8/kWh</strong>. ನಿಖರ ಸಂಖ್ಯೆಗೆ ನಿಮ್ಮ ಇತ್ತೀಚಿನ ವಿದ್ಯುತ್ ಬಿಲ್ ಪರಿಶೀಲಿಸಿ.",
         "tip_no_anomalies": "ಇತ್ತೀಚಿನ ಡೇಟಾದಲ್ಲಿ ಯಾವುದೇ ವಿಪರ್ಯಾಸಗಳು ಪತ್ತೆಯಾಗಿಲ್ಲ. ಬಳಕೆ ಸಾಮಾನ್ಯ ಪ್ರಮಾಣದೊಳಗೆ ಇದೆ.",
         "tip_anomaly_usage_high": "{appliance} ಬಳಕೆ {date} ರಂದು {period} ಸಮಯದಲ್ಲಿ ಅಸಾಮಾನ್ಯವಾಗಿ ಅಧಿಕವಾಗಿತ್ತು (ವಾಸ್ತವ: {usage:.2f} kW vs ಸಾಮಾನ್ಯ: {mean:.2f} kW) — ಇದನ್ನು ಆಫ್-ಪೀಕ್ ಸಮಯಕ್ಕೆ ಸ್ಥಳಾಂತರಿಸುವುದರಿಂದ ಈ ತಿಂಗಳು ಸುಮಾರು Rs. {saving:.0f} ಉಳಿತಾಯ ಮಾಡಬಹುದು.",
@@ -1016,11 +1022,13 @@ TRANSLATIONS = {
         "ens_auto": "ఆటోమేటిక్ (కొలిచిన ఖచ్చితత్వం ప్రకారం)",
         "ens_custom": "నేనే సెట్ చేస్తాను",
         "ens_share": "XGBoost వాటా (%)",
-        "ens_auto_caption": "ఆటోమేటిక్ బరువులు: XGBoost {x}%, LSTM {l}%. కొలిచిన లోపం: XGBoost {xm} kW, LSTM {lm} kW.",
+        "ens_auto_caption": "ఆటోమేటిక్ బరువులు, ధృవీకరణ డేటాపై ఎంచుకున్నవి: XGBoost {x}%, LSTM {l}%. ధృవీకరణ లోపం: XGBoost {xm} kW, LSTM {lm} kW.",
         "ens_custom_caption": "అంచనా = {x}% XGBoost + {l}% LSTM. LSTM అందుబాటులో లేకపోతే XGBoost మాత్రమే వాడతాం.",
-        "card_smart_forecast": "స్మార్ట్ సూచన",
+        "card_smart_forecast": "అంచనా లోపం",
+        "ens_xgb_only": "ఇక్కడ XGBoost మోడల్ మాత్రమే ఉంది, కాబట్టి కలపడానికి ఏమీ లేదు.",
+        "cap_forecast_vs_base": "మోడల్ ఎప్పుడూ చూడని గంటలపై సగటు లోపం: తదుపరి గంట ఈ గంటలాగే ఉంటుందని అనుకోవడం కంటే {pct}% తక్కువ ({base} kW).",
         "pred_model_hybrid": "హైబ్రిడ్: XGBoost + LSTM",
-        "pred_model_xgb_only": "XGBoost మాత్రమే (LSTM ప్రారంభమవుతోంది)",
+        "pred_model_xgb_only": "XGBoost",
         "cap_forecast_mae": "సగటు హైబ్రిడ్ లోపం ± {mae} kW",
         "card_today_cost": "ఈరోజు ఖర్చు",
         "card_kwh_today": "{kwh} kWh ఈరోజు వినియోగం",
@@ -1095,7 +1103,7 @@ TRANSLATIONS = {
         "about_demo": ("<strong>ఈ డెమో గురించి:</strong> మీ డాష్‌బోర్డ్ ఇంటి విద్యుత్ డేటాపై శిక్షణ "
                        "పొందిన స్మార్ట్ మోడల్స్‌తో వినియోగం మరియు ఖర్చును అంచనా వేస్తుంది. "
                        "అన్ని రీడింగ్‌లు ప్రదర్శన కోసం సిమ్యులేటెడ్. "
-                       "డేటా పెరిగే కొద్దీ అంచనాలు మరింత ఖచ్చితంగా మారతాయి."),
+                       "చూపిన ఖచ్చితత్వాన్ని రికార్డింగ్ చివరి భాగంపై కొలిచాం, దాన్ని మోడల్స్ శిక్షణలో ఎప్పుడూ చూడలేదు."),
         "rate_hint_avg": "ఖచ్చితంగా తెలియదా? భారతదేశంలో సగటు ఆవాసిక రేటు <strong style=\"color:#4A6741;\">Rs. 6-8/kWh</strong>. ఖచ్చితమైన సంఖ్యకు మీ సరికొత్త విద్యుత్ బిల్లును చూడండి.",
         "tip_no_anomalies": "ఇటీవలి డేటాలో అసమానతలు కనుగొనబడలేదు. వినియోగం సాధారణ నమూనాల్లో ఉంది.",
         "tip_anomaly_usage_high": "{appliance} వినియోగం {date} న {period} సమయంలో అసాధారణంగా ఎక్కువగా ఉంది (వాస్తవ: {usage:.2f} kW vs సాధారణ: {mean:.2f} kW) — దీన్ని ఆఫ్-పీక్ గంటలకు మార్చడం ద్వారా ఈ నెలలో Rs. {saving:.0f} ఆదా చేయవచ్చు.",

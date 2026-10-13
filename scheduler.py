@@ -72,9 +72,39 @@ def feasible_starts(profile: ApplianceProfile, duration: int, current_start: int
     return starts
 
 
+SLOT_MIN = 15
+SLOTS = 1440 // SLOT_MIN
+
+
+def _slots(start: int, dur: int) -> np.ndarray:
+    """15-minute slots of the day that a run starting at `start` touches."""
+    return np.unique(((start + np.arange(max(dur, 1))) % 1440) // SLOT_MIN)
+
+
+def background_load(pred: pd.DataFrame, movable) -> np.ndarray:
+    """
+    Load per 15-minute slot of the day from everything that is NOT being moved
+    (90th percentile across days), in kW.  Moved runs are added on top of it.
+    """
+    dts = pd.to_datetime(pred["datetime"])
+    other = pred["mains_kw"].astype(float).copy() if "mains_kw" in pred else pd.Series(0.0, index=pred.index)
+    for key in movable:
+        if f"{key}_kw" in pred:
+            other = other - pred[f"{key}_kw"].astype(float)
+    slot = ((dts.dt.hour * 60 + dts.dt.minute) // SLOT_MIN).to_numpy()
+    frame = pd.DataFrame({"slot": slot, "day": dts.dt.date.to_numpy(), "kw": other.clip(lower=0).to_numpy()})
+    per_day = frame.groupby(["day", "slot"])["kw"].mean().unstack()
+    return np.array(per_day.quantile(0.9).reindex(range(SLOTS)).fillna(0.0), dtype=float)
+
+
 def _shift_suggestion(key: str, group: pd.DataFrame, profile: ApplianceProfile,
-                      tariff: Tariff, prefs: HouseholdPrefs, days: float) -> Optional[dict]:
-    """Best alternative time for the runs that currently fall in costly hours."""
+                      tariff: Tariff, prefs: HouseholdPrefs, days: float,
+                      load: Optional[np.ndarray] = None, cap_kw: Optional[float] = None) -> Optional[dict]:
+    """
+    Best alternative time for the runs that currently fall in costly hours.
+    With `load` (kW already planned per 15-minute slot) and `cap_kw`, a time is
+    only offered if the home stays under the cap with this appliance running.
+    """
     moves = []
     for _, s in group.iterrows():
         start = s["start"].hour * 60 + s["start"].minute
@@ -82,6 +112,8 @@ def _shift_suggestion(key: str, group: pd.DataFrame, profile: ApplianceProfile,
         avg_kw = s["kwh"] / (dur / 60.0)
         now_cost = tariff.run_cost(start, dur, avg_kw)
         options = feasible_starts(profile, dur, start, prefs)
+        if load is not None and cap_kw:
+            options = [o for o in options if float(load[_slots(o, dur)].max()) + avg_kw <= cap_kw]
         if not options:
             continue
         costs = [tariff.run_cost(o, dur, avg_kw) for o in options]
@@ -91,7 +123,7 @@ def _shift_suggestion(key: str, group: pd.DataFrame, profile: ApplianceProfile,
         best = min(near, key=lambda o: abs(o - start))
         if now_cost - cheapest > 0.01:
             moves.append({"from": start, "to": best, "saving": now_cost - cheapest,
-                          "dur": dur, "kwh": s["kwh"], "now": now_cost, "new": cheapest})
+                          "dur": dur, "kwh": s["kwh"], "now": now_cost, "new": cheapest, "kw": avg_kw})
     if not moves:
         return None
     m = pd.DataFrame(moves)
@@ -113,9 +145,32 @@ def _shift_suggestion(key: str, group: pd.DataFrame, profile: ApplianceProfile,
                    f"{_hhmm(typical_to)} is {tariff.label_at(typical_to / 60).lower()} "
                    f"(Rs. {tariff.rate_at(typical_to / 60):.2f}/unit) and inside your allowed hours."),
         "monthly_saving_rs": round(monthly, 0),
+        "monthly_saving_exact": monthly,
         "calculation": (f"Average run {dur} min, {m['kwh'].mean():.2f} kWh: "
                         f"Rs. {m['now'].mean():.2f} now vs Rs. {m['new'].mean():.2f} moved "
                         f"= Rs. {saving_per_run:.2f} per run x {runs_per_month:.0f} runs/month"),
+        "_reserve": (typical_to, dur, float(m["kw"].quantile(0.9))),
+    }
+
+
+def _combined_routine(small: List[dict], profiles) -> Optional[dict]:
+    """One tip for several moves that are each too small to show but add up."""
+    small = sorted(small, key=lambda s: -s["monthly_saving_exact"])
+    total = sum(s["monthly_saving_exact"] for s in small)
+    names = [profiles[s["appliance"]].name.lower() for s in small]
+    listed = ", ".join(names[:-1]) + " and " + names[-1]
+    return {
+        "id": "shift:routine:" + "+".join(sorted(s["appliance"] for s in small)),
+        "appliance": small[0]["appliance"],
+        "kind": "shift",
+        "title": f"Move the {listed} to cheaper hours",
+        "detail": " ".join(s["title"] + f" (about Rs. {s['monthly_saving_exact']:.0f}/month)." for s in small)
+                  + " Each change is small; together they are worth doing.",
+        "monthly_saving_rs": round(total, 0),
+        "monthly_saving_exact": total,
+        "calculation": " + ".join(f"Rs. {s['monthly_saving_exact']:.1f}" for s in small)
+                       + f" = Rs. {total:.1f} a month. " + " | ".join(s["calculation"] for s in small),
+        "members": [s["appliance"] for s in small],
     }
 
 
@@ -205,12 +260,37 @@ def recommend(pred: pd.DataFrame, sessions: pd.DataFrame,
         notes.append("Your tariff is the same all day, so running an appliance at a "
                      "different time would not change your bill. No timing tips are shown.")
 
+    # Shiftable appliances are planned together: each accepted move is added
+    # to the day's load, so later moves cannot stack on top of it and push the
+    # home past its sanctioned load.  Biggest possible saving is planned first.
+    shiftable = [k for k, p in profiles.items()
+                 if p.category == SHIFTABLE and tariff.tod_enabled and not sessions[sessions["appliance"] == k].empty]
+    cap = (prefs.sanctioned_kw * prefs.load_margin) if prefs.sanctioned_kw else None
+    load = background_load(pred, shiftable) if (cap and shiftable) else None
+    if shiftable:
+        unconstrained = {k: _shift_suggestion(k, sessions[sessions["appliance"] == k], profiles[k],
+                                              tariff, prefs, days) for k in shiftable}
+        order = sorted(shiftable, key=lambda k: -(unconstrained[k] or {}).get("monthly_saving_exact", 0.0))
+        for key in order:
+            s = _shift_suggestion(key, sessions[sessions["appliance"] == key], profiles[key],
+                                  tariff, prefs, days, load, cap)
+            if s is None:
+                if unconstrained[key] is not None and cap:
+                    notes.append(f"{profiles[key].name}: a cheaper time exists, but running it then "
+                                 f"together with your other appliances would go above "
+                                 f"{prefs.load_margin * 100:.0f}% of your {prefs.sanctioned_kw:g} kW "
+                                 f"sanctioned load, so it is not suggested.")
+                continue
+            if load is not None:
+                to, dur, kw = s["_reserve"]
+                load = load.copy()
+                load[_slots(to, dur)] += kw
+            candidates.append(s)
+
     for key, profile in profiles.items():
         group = sessions[sessions["appliance"] == key]
-        if profile.category == SHIFTABLE and tariff.tod_enabled and not group.empty:
-            s = _shift_suggestion(key, group, profile, tariff, prefs, days)
-            if s:
-                candidates.append(s)
+        if profile.category == SHIFTABLE:
+            continue
         elif profile.category == COMFORT and not group.empty:
             candidates.extend(_ac_suggestions(group, profile, tariff, days))
         elif profile.category == ALWAYS_ON:
@@ -218,7 +298,7 @@ def recommend(pred: pd.DataFrame, sessions: pd.DataFrame,
             if s:
                 candidates.append(s)
 
-    suggestions = []
+    suggestions, small_shifts = [], []
     for s in candidates:
         profile = profiles[s["appliance"]]
         # Hard guard: the category decides what may be said at all.
@@ -227,10 +307,21 @@ def recommend(pred: pd.DataFrame, sessions: pd.DataFrame,
         if s["id"] in prefs.dismissed:
             continue
         if s["monthly_saving_rs"] < prefs.min_monthly_saving_rs:
+            if s["kind"] == "shift":
+                small_shifts.append(s)
             notes.append(f"{profile.name}: a possible change would save only about "
-                         f"Rs. {s['monthly_saving_rs']:.0f} a month, so it is not suggested.")
+                         f"Rs. {s['monthly_saving_rs']:.0f} a month, so it is not suggested on its own.")
             continue
         suggestions.append(s)
+    # Several small moves can be worth making together.
+    if len(small_shifts) >= 2:
+        combo = _combined_routine(small_shifts, profiles)
+        if combo["monthly_saving_rs"] >= prefs.min_monthly_saving_rs and combo["id"] not in prefs.dismissed:
+            suggestions.append(combo)
+            covered = {profiles[k].name for k in combo["members"]}
+            notes = [n for n in notes if not (n.split(":")[0] in covered and "on its own" in n)]
+    for s in suggestions:
+        s.pop("_reserve", None)
     suggestions.sort(key=lambda s: s["monthly_saving_rs"], reverse=True)
 
     return {

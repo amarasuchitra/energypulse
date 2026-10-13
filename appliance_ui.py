@@ -96,10 +96,11 @@ def _totals_cached(date, scenario, owned, days, rate, tod):
 
 
 @st.cache_data(show_spinner=False)
-def _recommend_cached(date, scenario, owned, days, rate, tod, min_saving, dismissed):
+def _recommend_cached(date, scenario, owned, days, rate, tod, min_saving, dismissed, sanctioned_kw=3.0):
     pred = last_days(detected_history(date, scenario, owned), days)
     sessions = _sessions_cached(date, scenario, owned, days, rate, tod)
-    prefs = HouseholdPrefs(min_monthly_saving_rs=float(min_saving), dismissed=set(dismissed))
+    prefs = HouseholdPrefs(min_monthly_saving_rs=float(min_saving), dismissed=set(dismissed),
+                           sanctioned_kw=float(sanctioned_kw))
     return recommend(pred, sessions, Tariff(rate=rate, tod_enabled=tod), prefs)
 
 
@@ -248,7 +249,8 @@ def _render_sessions(sessions, section):
 
 def _advice(keys, min_saving):
     dismissed = tuple(sorted(st.session_state.get("nilm_dismissed", set())))
-    return _sessions_cached(*keys), _recommend_cached(*keys, float(min_saving), dismissed)
+    return _sessions_cached(*keys), _recommend_cached(*keys, float(min_saving), dismissed,
+                                                      float(st.session_state.get("sanctioned_kw", 3.0)))
 
 
 def render_appliance_tab(tariff_rate: float, owned, section, layout_fn):

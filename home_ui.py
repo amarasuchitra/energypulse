@@ -150,7 +150,8 @@ def _payload(day: pd.DataFrame, truth, tips: dict, alerts: list, tariff: Tariff,
 
 def _tips_and_alerts(pred: pd.DataFrame, today: pd.DataFrame, tariff: Tariff):
     sessions = extract_sessions(pred, tariff)
-    result = recommend(pred, sessions, tariff, HouseholdPrefs(max_suggestions=10))
+    result = recommend(pred, sessions, tariff, HouseholdPrefs(
+        max_suggestions=10, sanctioned_kw=float(st.session_state.get("sanctioned_kw", 3.0))))
     tips = {}
     for s in result["suggestions"]:
         tips.setdefault(s["appliance"], []).append(

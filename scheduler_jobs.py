@@ -19,6 +19,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
+import pandas as pd
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -145,11 +146,18 @@ def check_bill_alerts(db=None, forecast_df=None) -> Dict[str, int]:
         print("Forecast not available, skipping bill alerts")
         return {"checked": 0, "failed": 0}
     counts = {"checked": 0, "failed": 0}
+    # Only the calendar month after the newest reading counts as "next month".
+    from forecast import month_slice
+    newest = pd.Timestamp.now() if forecast_df.empty else pd.to_datetime(forecast_df["datetime"]).min()
+    nxt = newest.normalize().replace(day=1) + pd.DateOffset(months=1)
+    month_df = month_slice(forecast_df, nxt.year, nxt.month)
+    if month_df.empty:
+        month_df = forecast_df
     for h in registered_households(db):
         hid = h["household_id"]
         try:
             rate = household_rate(db, hid)
-            info = next_month_cost(forecast_df, rate)
+            info = next_month_cost(month_df, rate)
             dispatch_household_alerts(
                 household_id=hid,
                 primary_email=h["email"],

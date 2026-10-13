@@ -287,7 +287,7 @@ class TestRejections(unittest.TestCase):
 
 
 class TestCapabilities(unittest.TestCase):
-    def test_total_only_file_gates_models_but_keeps_costs(self):
+    def test_total_only_file_forecasts_but_gates_appliances(self):
         frame = pd.DataFrame({
             "datetime": pd.date_range("2024-01-01", periods=48, freq="h"),
             "Global_active_power": np.full(48, 1.0),
@@ -296,8 +296,9 @@ class TestCapabilities(unittest.TestCase):
         caps = capabilities_of(df)
         self.assertTrue(caps["costs"]["enabled"])
         self.assertTrue(caps["trends"]["enabled"])
-        self.assertFalse(caps["prediction"]["enabled"])
-        self.assertIn("Voltage", caps["prediction"]["missing"])
+        # Forecasting needs total power only (a power-only model is used).
+        self.assertTrue(caps["prediction"]["enabled"])
+        self.assertFalse(caps["appliances"]["enabled"])
 
     def test_full_feature_file_enables_everything(self):
         frame = pd.DataFrame({

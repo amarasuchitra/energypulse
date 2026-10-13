@@ -25,26 +25,13 @@ import unicodedata
 import pandas as pd
 
 TARGET = "Global_active_power"
-FEATURE_COLS = [
-    "hour",
-    "day_of_week",
-    "is_weekend",
-    "Global_reactive_power",
-    "Voltage",
-    "Global_intensity",
-    "Sub_metering_1",
-    "Sub_metering_2",
-    "Sub_metering_3",
-]
 METER_COLS = ["Sub_metering_1", "Sub_metering_2", "Sub_metering_3"]
 
-# Columns the models were trained on; without all of them the next-hour
-# prediction cannot be computed honestly.
-MODEL_INPUT_COLS = ["Global_active_power"] + FEATURE_COLS
 
 # Everything the UI can compute, and the columns each capability needs.
 CAPABILITY_REQUIREMENTS = {
-    "prediction": MODEL_INPUT_COLS,
+    # The forecast needs total power only; meter columns improve it when present.
+    "prediction": [TARGET],
     "appliances": METER_COLS,
     "optimize": METER_COLS,
     "costs": [TARGET],

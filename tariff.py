@@ -16,6 +16,7 @@ not constants.  Check the user's own bill before quoting savings.
 """
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import List, Tuple
 
 import numpy as np
@@ -53,8 +54,9 @@ class Tariff:
         return "Normal"
 
     def minute_rates(self) -> np.ndarray:
-        """Rs./kWh for each of the 1440 minutes of a day."""
-        return np.array([self.rate_at(m / 60.0) for m in range(1440)])
+        """Rs./kWh for each of the 1440 minutes of a day (computed once per tariff)."""
+        return _minute_rates(float(self.rate), bool(self.tod_enabled),
+                             tuple(tuple(p) for p in self.periods))
 
     def cost(self, datetimes, kw) -> float:
         """Cost in Rs. of a per-minute kW series."""
@@ -67,3 +69,16 @@ class Tariff:
         """Cost of a steady run starting at `start_minute` of the day."""
         idx = (start_minute + np.arange(duration_min)) % 1440
         return float((avg_kw / 60.0 * self.minute_rates()[idx]).sum())
+
+
+@lru_cache(maxsize=64)
+def _minute_rates(rate: float, tod_enabled: bool, periods: tuple) -> np.ndarray:
+    hours = np.arange(1440) / 60.0
+    mult = np.ones(1440)
+    if tod_enabled:
+        # Earlier periods win where periods overlap, as in Tariff.multiplier_at.
+        for start, end, m, _ in reversed(periods):
+            mult[(hours >= start) & (hours < end)] = m
+    out = rate * mult
+    out.setflags(write=False)
+    return out

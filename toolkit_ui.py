@@ -91,6 +91,7 @@ def _tariff_editor(ctx) -> dict:
     sanctioned = c2.number_input("Sanctioned load (kW)", 0.5, 50.0, float(cfg["sanctioned_kw"]), 0.5,
                                  key="tk_sanctioned", help="Printed on your bill as sanctioned or connected load.")
     save_settings(ctx, state=state, sanctioned_kw=float(sanctioned))
+    st.session_state["sanctioned_kw"] = float(sanctioned)      # used by the appliance scheduler
     preset = tk.TARIFF_PRESETS[state]
     with st.expander("Rates used (edit to match your bill)"):
         frame = pd.DataFrame([{"Up to units (blank = all above)": u, "Rs per unit": r} for u, r in preset["slabs"]])

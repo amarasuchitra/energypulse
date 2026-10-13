@@ -86,7 +86,7 @@ def test_bill_alerts_run_for_each_household(tmp_path, monkeypatch):
     calls = []
     import notifications
     monkeypatch.setattr(notifications, "dispatch_household_alerts", lambda **kw: calls.append(kw))
-    when = pd.date_range("2030-01-01", periods=24 * 30, freq="h")
+    when = pd.date_range("2030-01-01", periods=24 * 62, freq="h")
     forecast = pd.DataFrame({"datetime": when, "predicted_kwh": 1.0, "day": when.date})
     result = jobs.check_bill_alerts(db=db, forecast_df=forecast)
     assert result == {"checked": 1, "failed": 0}

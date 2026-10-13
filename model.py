@@ -1,539 +1,488 @@
 """
-PART 3 — Hybrid Prediction Model (XGBoost + LSTM)
-===================================================
-Trains two models on Global_active_power using time-based features:
-  1. XGBoost regressor — trained on time + measurement features
-  2. LSTM neural network — trained on a sliding window of the last 10 readings
+PART 3 — Forecasting models (XGBoost + LSTM hybrid, bill forecast)
+==================================================================
 
-The hybrid prediction is the average of both models.
-Also provides next_month_forecast() for calendar view and cost projection.
+Trains every forecasting model the dashboard uses, on the cleaned UCI
+household data, with a strict time-ordered split:
 
-Models saved to models/:
-  - xgboost_model.pkl
-  - lstm_model.keras
-  - lstm_scaler.pkl
-  - model_meta.pkl
+    train       first 64% of the hours      (fit)
+    validation  next 16%                    (early stopping, model choice, blend weights, interval calibration)
+    test        last 20%                    (reported once; never used to choose anything)
 
-Run AFTER data.py:
+1. Next-hour power (kW)
+   - XGBoost on leak-free features: past power, past sub-meter and other
+     readings, rolling statistics and the clock of the target hour
+     (forecast_features.hourly_features).  Trained on absolute error.
+   - LSTM on the last 48 hours of readings.
+   - Hybrid: the blend weight that gives the lowest validation error.
+   - 90% band: 5% and 95% quantile models, conformally calibrated on validation.
+   All are compared with the persistence baseline ("next hour = this hour")
+   and seasonal baselines on the test period.
+
+2. Daily energy for the next 62 days (bill forecast)
+   - Gradient-boosted model on the last 90 days of daily energy.  A
+     household-specific variant also uses the time of year; a generic variant
+     (for uploaded data from other homes) does not.
+   - Compared with "average of the last 7 / 28 days" on the test period.
+
+Artifacts (models/):
+    forecast_xgb.json            XGBoost booster (version-portable JSON)
+    forecast_lstm.keras          LSTM
+    forecast_lstm_scaling.json   LSTM input scaling
+    forecast_q05.pkl, forecast_q95.pkl   interval models
+    daily_seasonal.pkl, daily_generic.pkl  bill-forecast models
+    forecast_meta.json           features, weights, calibration and every test metric
+and data/next_month_forecast.csv for the bundled sample.
+
+Run after data.py:
     python model.py
 """
 
+import json
 import os
 import pickle
+import platform
+import time
 
 import numpy as np
 import pandas as pd
-import xgboost as xgb
-from sklearn.metrics import mean_absolute_error
-from sklearn.preprocessing import MinMaxScaler
-from tensorflow import keras
 
-# ── Paths ──────────────────────────────────────────────────────────────
+from forecast_features import (
+    DAILY_HISTORY, DAILY_HORIZON, LSTM_INPUTS, LSTM_WINDOW, MEASUREMENTS, TARGET,  # noqa: F401 (TARGET re-exported)
+    daily_energy, daily_features, daily_training_set,
+    hourly_shape, hourly_training_set, lstm_frame,
+)
+
 DATA_DIR = "data"
 MODEL_DIR = "models"
 CLEAN_CSV = os.path.join(DATA_DIR, "cleaned_energy_data.csv")
-
-# ── Model settings ─────────────────────────────────────────────────────
-TARGET = "Global_active_power"  # the column we predict (in kW)
-
-# Features used by both XGBoost and LSTM (time + raw measurements)
-FEATURE_COLS = [
-    "hour",
-    "day_of_week",
-    "is_weekend",
-    "Global_reactive_power",
-    "Voltage",
-    "Global_intensity",
-    "Sub_metering_1",
-    "Sub_metering_2",
-    "Sub_metering_3",
-]
-
-# Extended features for the next-month forecast (uses only time-based features
-# since we won't have future measurements — model extrapolates from time alone)
-TIME_FEATURES = ["hour", "day_of_week", "is_weekend"]
-
-WINDOW_SIZE = 10      # LSTM sliding-window length (past 10 hours)
-TEST_FRACTION = 0.2   # hold out last 20% for evaluation
 SEED = 42
+TRAIN_FRAC, VAL_FRAC = 0.64, 0.16
+NOMINAL_COVERAGE = 0.90
 
+PATHS = {
+    "xgb": os.path.join(MODEL_DIR, "forecast_xgb.json"),
+    "xgb_power": os.path.join(MODEL_DIR, "forecast_xgb_power.json"),
+    "q05_power": os.path.join(MODEL_DIR, "forecast_q05_power.pkl"),
+    "q95_power": os.path.join(MODEL_DIR, "forecast_q95_power.pkl"),
+    "lstm": os.path.join(MODEL_DIR, "forecast_lstm.keras"),
+    "lstm_scaling": os.path.join(MODEL_DIR, "forecast_lstm_scaling.json"),
+    "q05": os.path.join(MODEL_DIR, "forecast_q05.pkl"),
+    "q95": os.path.join(MODEL_DIR, "forecast_q95.pkl"),
+    "daily_seasonal": os.path.join(MODEL_DIR, "daily_seasonal.pkl"),
+    "daily_generic": os.path.join(MODEL_DIR, "daily_generic.pkl"),
+    "meta": os.path.join(MODEL_DIR, "forecast_meta.json"),
+}
 
-# ──────────────────────────────────────────────────────────────────────
-# Data helpers
-# ──────────────────────────────────────────────────────────────────────
 
 def load_data() -> pd.DataFrame:
     """Load the cleaned CSV that data.py produced."""
     if not os.path.exists(CLEAN_CSV):
-        raise FileNotFoundError(
-            f"{CLEAN_CSV} not found.\nRun:  python data.py"
-        )
+        raise FileNotFoundError(f"{CLEAN_CSV} not found.\nRun:  python data.py")
     return pd.read_csv(CLEAN_CSV, parse_dates=["datetime"])
 
 
-def split_time(df, test_frac=TEST_FRACTION):
+def _mae(y, p):
+    y, p = np.asarray(y, float), np.asarray(p, float)
+    m = np.isfinite(y) & np.isfinite(p)
+    return float(np.mean(np.abs(y[m] - p[m])))
+
+
+def _rmse(y, p):
+    y, p = np.asarray(y, float), np.asarray(p, float)
+    m = np.isfinite(y) & np.isfinite(p)
+    return float(np.sqrt(np.mean((y[m] - p[m]) ** 2)))
+
+
+def _log(msg):
+    print(msg, flush=True)
+
+
+# ----------------------------------------------------------------- next hour
+def train_xgboost(Xtr, ytr, Xva, yva, only=None):
+    import xgboost as xgb
+    grid = [only] if only else [
+        dict(max_depth=6, learning_rate=0.03, min_child_weight=10, subsample=0.8, colsample_bytree=0.8),
+        dict(max_depth=8, learning_rate=0.03, min_child_weight=20, subsample=0.8, colsample_bytree=0.7),
+        dict(max_depth=4, learning_rate=0.05, min_child_weight=10, subsample=0.9, colsample_bytree=0.9),
+        dict(max_depth=7, learning_rate=0.02, min_child_weight=30, subsample=0.7, colsample_bytree=0.6,
+             reg_lambda=5.0),
+    ]
+    best = None
+    for params in grid:
+        t = time.time()
+        model = xgb.XGBRegressor(objective="reg:absoluteerror", n_estimators=4000,
+                                 early_stopping_rounds=150, tree_method="hist",
+                                 random_state=SEED, n_jobs=-1, **params)
+        model.fit(Xtr, ytr, eval_set=[(Xva, yva)], verbose=False)
+        mae = _mae(yva, model.predict(Xva))
+        _log(f"  XGBoost {params} -> val MAE {mae:.4f} ({model.best_iteration} trees, {time.time() - t:.0f}s)")
+        if best is None or mae < best[0]:
+            best = (mae, model, params)
+    _log(f"  XGBoost chosen: {best[2]}  val MAE {best[0]:.4f}")
+    params = dict(best[2], n_estimators=int(best[1].best_iteration) + 1)
+    return best[1], params
+
+
+def refit_xgboost(X, y, params, scale):
+    """Refit on more data with the chosen settings; tree count scaled with the data."""
+    import xgboost as xgb
+    p = dict(params)
+    p["n_estimators"] = max(50, int(round(p["n_estimators"] * scale)))
+    model = xgb.XGBRegressor(objective="reg:absoluteerror", tree_method="hist",
+                             random_state=SEED, n_jobs=-1, **p)
+    return model.fit(X, y, verbose=False)
+
+
+def lstm_samples(h, origins, mean, std):
     """
-    Time-ordered train/test split (no shuffling!).
-    The first (1-test_frac) rows train, the rest evaluate.
+    (X, valid) for LSTM windows ending at each origin hour.
+    X[i] holds the scaled inputs for the 48 hours up to and including origins[i].
     """
-    idx = int(len(df) * (1 - test_frac))
-    train = df.iloc[:idx].copy().reset_index(drop=True)
-    test = df.iloc[idx:].copy().reset_index(drop=True)
-    return train, test
+    F = lstm_frame(h)
+    arr = ((F.values - mean) / std).astype("float32")
+    pos = F.index.get_indexer(origins)
+    X = np.zeros((len(origins), LSTM_WINDOW, arr.shape[1]), dtype="float32")
+    valid = np.zeros(len(origins), dtype=bool)
+    for i, p in enumerate(pos):
+        if p < LSTM_WINDOW - 1:
+            continue
+        w = arr[p - LSTM_WINDOW + 1:p + 1]
+        if np.isfinite(w).all():
+            X[i] = w
+            valid[i] = True
+    return X, valid
 
 
-# ──────────────────────────────────────────────────────────────────────
-# XGBoost training
-# ──────────────────────────────────────────────────────────────────────
-
-def train_xgboost(train: pd.DataFrame, test: pd.DataFrame):
-    """
-    Train an XGBoost regressor on time + measurement features.
-    Returns (trained_model, predictions_on_test, MAE).
-    """
-    print("\n" + "=" * 55)
-    print("  Training XGBoost Regressor")
-    print("=" * 55)
-
-    X_train = train[FEATURE_COLS]
-    y_train = train[TARGET]
-    X_test = test[FEATURE_COLS]
-    y_test = test[TARGET]
-
-    model = xgb.XGBRegressor(
-        n_estimators=200,
-        max_depth=6,
-        learning_rate=0.1,
-        random_state=SEED,
-        n_jobs=-1,
-    )
-    model.fit(X_train, y_train)
-
-    preds = model.predict(X_test)
-    mae = mean_absolute_error(y_test, preds)
-    print(f"  XGBoost MAE : {mae:.4f} kW")
-    return model, preds, mae
-
-
-# ──────────────────────────────────────────────────────────────────────
-# LSTM training
-# ──────────────────────────────────────────────────────────────────────
-
-def make_sequences(features_2d: np.ndarray, target_1d: np.ndarray, window: int):
-    """
-    Build sliding-window (X, y) pairs for the LSTM.
-    For window=10: X = features[i-10:i], y = target[i].
-    """
-    X, y = [], []
-    for i in range(window, len(features_2d)):
-        X.append(features_2d[i - window : i])
-        y.append(target_1d[i])
-    return np.array(X), np.array(y)
-
-
-def train_lstm(train: pd.DataFrame, test: pd.DataFrame):
-    """
-    Train a 2-layer LSTM neural network using a sliding window.
-    Returns (trained_model, scaler, predictions_on_test, MAE).
-    """
-    print("\n" + "=" * 55)
-    print("  Training LSTM Neural Network")
-    print("=" * 55)
-
-    # Scale features to [0, 1] — LSTMs are sensitive to input scale
-    scaler = MinMaxScaler()
-    train_scaled = scaler.fit_transform(train[FEATURE_COLS + [TARGET]])
-    test_scaled = scaler.transform(test[FEATURE_COLS + [TARGET]])
-
-    y_train = train[TARGET].values
-    y_test = test[TARGET].values
-
-    # Create sliding window sequences
-    X_train_seq, y_train_seq = make_sequences(train_scaled, y_train, WINDOW_SIZE)
-    X_test_seq, y_test_seq = make_sequences(test_scaled, y_test, WINDOW_SIZE)
-
-    n_features = X_train_seq.shape[2]
-
-    # LSTM architecture:
-    #   Layer 1: LSTM 64 units, return_sequences for stacking
-    #   Dropout 20% to prevent overfitting
-    #   Layer 2: LSTM 32 units
-    #   Dropout 20%
-    #   Dense 16 (ReLU)
-    #   Output: single neuron (predicted kW)
+def _lstm_model():
+    from tensorflow import keras
     model = keras.Sequential([
-        keras.layers.LSTM(
-            64, return_sequences=True,
-            input_shape=(WINDOW_SIZE, n_features),
-        ),
-        keras.layers.Dropout(0.2),
-        keras.layers.LSTM(32),
-        keras.layers.Dropout(0.2),
-        keras.layers.Dense(16, activation="relu"),
+        keras.layers.Input(shape=(LSTM_WINDOW, len(LSTM_INPUTS))),
+        keras.layers.LSTM(64),
+        keras.layers.Dropout(0.1),
+        keras.layers.Dense(32, activation="relu"),
         keras.layers.Dense(1),
     ])
-
-    model.compile(optimizer="adam", loss="mse", metrics=["mae"])
-
-    print("  Training (this may take a few minutes) ...")
-    model.fit(
-        X_train_seq, y_train_seq,
-        epochs=20,
-        batch_size=32,
-        validation_split=0.1,
-        verbose=1,
-    )
-
-    preds = model.predict(X_test_seq, verbose=0).flatten()
-    mae = mean_absolute_error(y_test_seq, preds)
-    print(f"  LSTM MAE    : {mae:.4f} kW")
-    return model, scaler, preds, mae
+    model.compile(optimizer=keras.optimizers.Adam(1e-3), loss="mae")
+    return model
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Hybrid model
-# ──────────────────────────────────────────────────────────────────────
+def train_lstm(h, idx_tr, ytr, idx_va, yva):
+    from tensorflow import keras
+    keras.utils.set_random_seed(SEED)
+    F = lstm_frame(h)
+    train_rows = F.loc[F.index <= idx_tr[-1]]
+    mean = np.nanmean(train_rows.values, axis=0)
+    std = np.nanstd(train_rows.values, axis=0)
+    std[std == 0] = 1.0
+    y_mean, y_std = float(np.mean(ytr)), float(np.std(ytr))
 
-def hybrid_weights(xgb_mae, lstm_mae):
-    """
-    Blend the two models in inverse proportion to their validation MAE.
+    Xtr, vtr = lstm_samples(h, idx_tr, mean, std)
+    Xva, vva = lstm_samples(h, idx_va, mean, std)
+    ttr = ((np.asarray(ytr) - y_mean) / y_std).astype("float32")
+    tva = ((np.asarray(yva) - y_mean) / y_std).astype("float32")
+    _log(f"  LSTM windows: train {vtr.sum()}, validation {vva.sum()}")
 
-    A plain 50/50 average is only sensible when the two models are equally
-    accurate. Here XGBoost is roughly an order of magnitude more accurate
-    than the LSTM, so an equal average is dragged well below XGBoost alone.
-    Weighting by 1/MAE keeps both models in the blend while letting the more
-    accurate one dominate. Returns (w_xgb, w_lstm) summing to 1.
-    """
-    xgb_mae = abs(float(xgb_mae))
-    lstm_mae = abs(float(lstm_mae))
-    if not (np.isfinite(xgb_mae) and np.isfinite(lstm_mae)):
-        return 0.5, 0.5
-    if xgb_mae <= 0 and lstm_mae <= 0:
-        return 0.5, 0.5
-    if xgb_mae <= 0:
-        return 0.0, 1.0
-    if lstm_mae <= 0:
-        return 1.0, 0.0
-    inv_x, inv_l = 1.0 / xgb_mae, 1.0 / lstm_mae
-    total = inv_x + inv_l
-    return inv_x / total, inv_l / total
-
-
-def compute_hybrid(xgb_preds, lstm_preds, y_true, weights=None):
-    """
-    Blend XGBoost and LSTM predictions.
-    LSTM preds start at index WINDOW_SIZE (sequences discard first rows).
-    XGBoost preds cover every test row. Align them.
-    Returns (hybrid_predictions, hybrid_MAE).
-    """
-    n = min(len(xgb_preds), len(lstm_preds))
-    if weights is None:
-        weights = hybrid_weights(
-            mean_absolute_error(y_true[WINDOW_SIZE: WINDOW_SIZE + n], xgb_preds[:n]),
-            mean_absolute_error(y_true[WINDOW_SIZE: WINDOW_SIZE + n], lstm_preds[:n]),
-        )
-    w_xgb, w_lstm = weights
-    hybrid = (w_xgb * xgb_preds[WINDOW_SIZE: WINDOW_SIZE + n]
-              + w_lstm * lstm_preds[:n])
-    aligned_y = y_true[WINDOW_SIZE: WINDOW_SIZE + n]
-    mae = mean_absolute_error(aligned_y, hybrid)
-    return hybrid, mae
+    model = _lstm_model()
+    stop = keras.callbacks.EarlyStopping(monitor="val_loss", patience=6, restore_best_weights=True)
+    t = time.time()
+    hist = model.fit(Xtr[vtr], ttr[vtr], validation_data=(Xva[vva], tva[vva]),
+                     epochs=60, batch_size=128, callbacks=[stop], verbose=2)
+    best_epochs = int(np.argmin(hist.history["val_loss"])) + 1
+    _log(f"  LSTM trained in {time.time() - t:.0f}s; best after {best_epochs} epochs")
+    scaling = {"inputs": LSTM_INPUTS, "window": LSTM_WINDOW,
+               "mean": [float(v) for v in mean], "std": [float(v) for v in std],
+               "y_mean": y_mean, "y_std": y_std, "epochs": best_epochs}
+    return model, scaling
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Next-month forecast
-# ──────────────────────────────────────────────────────────────────────
-
-def next_month_forecast(xgb_model, df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Extrapolate the hybrid model's hour/day-of-week pattern across every day
-    of the coming calendar month.
-
-    Uses XGBoost's ability to predict from time-features alone by filling
-    measurement columns with the historical average for that hour-of-day.
-
-    Returns a DataFrame with columns:
-      datetime, predicted_kwh (total for that hour), day
-    """
-    # Determine the "next month" from the last date in the data
-    last_date = df["datetime"].max()
-    next_month = last_date.month + 1 if last_date.month < 12 else 1
-    next_year = last_date.year if last_date.month < 12 else last_date.year + 1
-
-    # Generate every hour in the next calendar month
-    start = pd.Timestamp(f"{next_year}-{next_month:02d}-01")
-    # End is last hour of the month
-    if next_month == 12:
-        end_month_start = pd.Timestamp(f"{next_year + 1}-01-01")
-    else:
-        end_month_start = pd.Timestamp(f"{next_year}-{next_month + 1:02d}-01")
-    end = end_month_start - pd.Timedelta(hours=1)
-
-    hours = pd.date_range(start, end, freq="h")
-    forecast_df = pd.DataFrame({"datetime": hours})
-
-    # Add time features
-    forecast_df["hour"] = forecast_df["datetime"].dt.hour
-    forecast_df["day_of_week"] = forecast_df["datetime"].dt.dayofweek
-    forecast_df["is_weekend"] = forecast_df["datetime"].dt.dayofweek.isin([5, 6]).astype(int)
-
-    # For measurements, use the historical hourly average for each hour-of-day
-    # This gives the model realistic input values to predict from
-    hourly_avg = df.groupby("hour")[FEATURE_COLS].mean()
-    for col in FEATURE_COLS:
-        if col not in TIME_FEATURES:
-            forecast_df[col] = forecast_df["hour"].map(hourly_avg[col])
-
-    # XGBoost prediction for each hour
-    X_pred = forecast_df[FEATURE_COLS]
-    forecast_df["predicted_kw"] = xgb_model.predict(X_pred)
-
-    # Each row is 1 hour; energy (kWh) = power (kW) * 1 hour
-    forecast_df["predicted_kwh"] = forecast_df["predicted_kw"]
-
-    # Add day column for daily aggregation
-    forecast_df["day"] = forecast_df["datetime"].dt.date
-
-    return forecast_df
+def refit_lstm(h, idx, y, scaling, scale):
+    """Refit on train + validation for the chosen number of epochs (scaled with the data)."""
+    from tensorflow import keras
+    keras.utils.set_random_seed(SEED)
+    X, valid = lstm_samples(h, idx, np.array(scaling["mean"]), np.array(scaling["std"]))
+    t = ((np.asarray(y) - scaling["y_mean"]) / scaling["y_std"]).astype("float32")
+    model = _lstm_model()
+    epochs = max(3, int(round(scaling["epochs"] * scale)))
+    model.fit(X[valid], t[valid], epochs=epochs, batch_size=128, verbose=2)
+    return model
 
 
-def _as_float(value, default=0.0):
-    """Coerce anything (None/NaN/str) into a finite float."""
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return default
-    if not np.isfinite(out):
-        return default
+def lstm_predict(model, scaling, h, origins):
+    mean, std = np.array(scaling["mean"]), np.array(scaling["std"])
+    X, valid = lstm_samples(h, origins, mean, std)
+    out = np.full(len(origins), np.nan)
+    if valid.any():
+        raw = model.predict(X[valid], verbose=0, batch_size=512).ravel()
+        out[valid] = raw * scaling["y_std"] + scaling["y_mean"]
     return out
 
 
-def _feature_frame(row_dict):
-    """Build a single-row feature frame with numeric, finite values."""
-    data = {col: _as_float(row_dict.get(col, 0.0)) for col in FEATURE_COLS}
-    return pd.DataFrame([data], columns=FEATURE_COLS)
+def best_blend(y, p_xgb, p_lstm):
+    """Weight on the LSTM (0..1) that minimises MAE where both predictions exist."""
+    m = np.isfinite(p_lstm)
+    best_w, best_mae = 0.0, _mae(y[m], p_xgb[m])
+    for w in np.round(np.arange(0.0, 1.0001, 0.05), 2):
+        mae = _mae(y[m], (1 - w) * p_xgb[m] + w * p_lstm[m])
+        if mae < best_mae - 1e-9:
+            best_w, best_mae = float(w), mae
+    return best_w
 
 
-def _lstm_window(recent_df):
-    """
-    Return the last WINDOW_SIZE rows as a float frame, or (None, reason) if
-    the window cannot be used.
-
-    The scaler was fitted on FEATURE_COLS + [TARGET] in that exact order, so
-    the window must be built the same way and must be exactly WINDOW_SIZE long.
-    """
-    if recent_df is None or not isinstance(recent_df, pd.DataFrame):
-        return None, "no_history"
-    needed = FEATURE_COLS + [TARGET]
-    missing = [c for c in needed if c not in recent_df.columns]
-    if missing:
-        return None, "missing_columns:" + ",".join(missing[:3])
-    if len(recent_df) < WINDOW_SIZE:
-        return None, "insufficient_history"
-    window = recent_df[needed].tail(WINDOW_SIZE)
-    if window.isna().any().any():
-        return None, "non_finite_history"
-    return window.astype("float32"), "ok"
+def blend(p_xgb, p_lstm, w_lstm):
+    out = np.asarray(p_xgb, float).copy()
+    m = np.isfinite(p_lstm)
+    out[m] = (1 - w_lstm) * out[m] + w_lstm * np.asarray(p_lstm)[m]
+    return np.maximum(out, 0.0)
 
 
-def predict_next_period(row_dict, xgb_model, lstm_model, scaler, recent_df,
-                        return_info=False, weights=None):
-    """
-    Make a hybrid prediction for the next period given the current row
-    and a window of recent readings.
+def train_interval(Xtr, ytr, Xva, yva):
+    from sklearn.ensemble import HistGradientBoostingRegressor
+    q = {}
+    for alpha in (0.05, 0.95):
+        q[alpha] = HistGradientBoostingRegressor(
+            loss="quantile", quantile=alpha, learning_rate=0.05, max_iter=600,
+            max_leaf_nodes=31, min_samples_leaf=40, random_state=SEED).fit(Xtr, ytr)
+    lo, hi = q[0.05].predict(Xva), q[0.95].predict(Xva)
+    lo, hi = np.minimum(lo, hi), np.maximum(lo, hi)
+    yv = np.asarray(yva)
+    scores = np.maximum(lo - yv, yv - hi)
+    n = len(scores)
+    offset = float(np.quantile(scores, min(1.0, np.ceil((n + 1) * NOMINAL_COVERAGE) / n)))
+    return q, offset
 
-    Returns (hybrid_pred, xgb_pred, lstm_pred) all in kW.
-    With return_info=True a fourth element is appended:
-    {"lstm_used": bool, "lstm_reason": str, "w_xgb": float, "w_lstm": float}
-    """
-    if weights is None:
-        weights = (0.5, 0.5)
-    w_xgb, w_lstm = float(weights[0]), float(weights[1])
-    if not (np.isfinite(w_xgb) and np.isfinite(w_lstm)) or (w_xgb + w_lstm) <= 0:
-        w_xgb, w_lstm = 0.5, 0.5
-    total_w = w_xgb + w_lstm
-    w_xgb, w_lstm = w_xgb / total_w, w_lstm / total_w
 
-    feat_df = _feature_frame(row_dict)
-    xgb_pred = _as_float(xgb_model.predict(feat_df)[0])
+def band(q, offset, X):
+    lo, hi = q[0.05].predict(X), q[0.95].predict(X)
+    return np.maximum(0.0, np.minimum(lo, hi) - offset), np.maximum(lo, hi) + offset
 
-    lstm_pred = xgb_pred
-    lstm_used = False
 
-    if lstm_model is None or scaler is None:
-        reason = "lstm_unavailable"
-        w_lstm, w_xgb = 0.0, 1.0
-    else:
-        window, reason = _lstm_window(recent_df)
-        if window is not None:
-            try:
-                scaled = np.asarray(scaler.transform(window), dtype="float32")
-                if scaled.shape != (WINDOW_SIZE, len(FEATURE_COLS) + 1):
-                    reason = "scaler_shape_mismatch"
-                else:
-                    lstm_input = scaled.reshape(1, WINDOW_SIZE, -1)
-                    raw = lstm_model.predict(lstm_input, verbose=0)
-                    candidate = _as_float(np.asarray(raw).ravel()[0], default=float("nan"))
-                    if np.isfinite(candidate):
-                        lstm_pred = candidate
-                        lstm_used = True
-                        reason = "ok"
-                    else:
-                        reason = "non_finite_output"
-            except Exception as exc:  # noqa: BLE001 - never let the LSTM kill the UI
-                reason = f"lstm_error:{type(exc).__name__}"
+# ----------------------------------------------------------------- daily
+def train_daily(d, a_day, b_day, seasonal):
+    from sklearn.ensemble import HistGradientBoostingRegressor
+    train = daily_training_set(d, range(DAILY_HISTORY - 1, b_day - DAILY_HORIZON), seasonal)
+    train = train.dropna(subset=["y"])
+    feats = [c for c in train.columns if c not in ("y", "origin")]
+    model = HistGradientBoostingRegressor(
+        loss="absolute_error", learning_rate=0.03, max_iter=800, max_leaf_nodes=15,
+        min_samples_leaf=60, l2_regularization=1.0, random_state=SEED).fit(train[feats], train["y"])
+    return model, feats
 
-    hybrid = _as_float(w_xgb * xgb_pred + w_lstm * lstm_pred)
-    if return_info:
-        return hybrid, xgb_pred, lstm_pred, {
-            "lstm_used": lstm_used,
-            "lstm_reason": reason,
-            "w_xgb": round(w_xgb, 4),
-            "w_lstm": round(w_lstm, 4),
+
+def daily_metrics(d, model, feats, origins, seasonal):
+    test = daily_training_set(d, origins, seasonal)
+    test["p"] = model.predict(test[feats])
+    for name in ("m7", "m28"):
+        test["b_" + name] = test[name]
+    out = {}
+    for h_max, label in ((30, "next_30_days"), (DAILY_HORIZON, "next_62_days")):
+        part = test[test["h"] <= h_max].dropna(subset=["y"])
+        g = part.groupby("origin").agg(y=("y", "sum"), p=("p", "sum"), m7=("b_m7", "sum"),
+                                       m28=("b_m28", "sum"), k=("y", "count"))
+        g = g[g["k"] == h_max]
+        out[label] = {
+            "model_total_error_pct": round(float((np.abs(g.y - g.p) / g.y).mean() * 100), 2),
+            "baseline_last7_total_error_pct": round(float((np.abs(g.y - g.m7) / g.y).mean() * 100), 2),
+            "baseline_last28_total_error_pct": round(float((np.abs(g.y - g.m28) / g.y).mean() * 100), 2),
+            "origins": int(len(g)),
         }
-    return hybrid, xgb_pred, lstm_pred
+    part = test[test["h"] <= 30].dropna(subset=["y"])
+    out["daily_mae_kwh"] = round(_mae(part.y, part.p), 3)
+    out["daily_mae_kwh_baseline_last7"] = round(_mae(part.y, part.b_m7), 3)
+    return out
 
 
-def predict_next_period_v2(row_dict, xgb_model, lstm_model, scaler, recent_df,
-                           feature_cols, quantile_models=None,
-                           return_info=False, weights=None):
-    """
-    V2 prediction with engineered features and quantile intervals.
-    """
-    if weights is None:
-        weights = (0.5, 0.5)
-    w_xgb, w_lstm = float(weights[0]), float(weights[1])
-    if not (np.isfinite(w_xgb) and np.isfinite(w_lstm)) or (w_xgb + w_lstm) <= 0:
-        w_xgb, w_lstm = 0.5, 0.5
-    total_w = w_xgb + w_lstm
-    w_xgb, w_lstm = w_xgb / total_w, w_lstm / total_w
-
-    # XGBoost prediction with engineered features
-    feat_df = pd.DataFrame([row_dict])[feature_cols]
-    xgb_pred = float(xgb_model.predict(feat_df)[0])
-
-    lstm_pred = xgb_pred
-    lstm_used = False
-
-    if lstm_model is not None and scaler is not None:
-        from model import _lstm_window, WINDOW_SIZE, FEATURE_COLS as BASE_FEATURES
-        # LSTM uses base features + target (11 columns)
-        lstm_features = BASE_FEATURES + [TARGET]
-        window, reason = _lstm_window(recent_df[lstm_features] if all(c in recent_df.columns for c in lstm_features) else recent_df)
-        if window is not None:
-            try:
-                scaled = np.asarray(scaler.transform(window), dtype="float32")
-                if scaled.shape != (WINDOW_SIZE, len(lstm_features)):
-                    reason = "scaler_shape_mismatch"
-                else:
-                    lstm_input = scaled.reshape(1, WINDOW_SIZE, -1)
-                    raw = lstm_model.predict(lstm_input, verbose=0)
-                    candidate = float(np.asarray(raw).ravel()[0])
-                    if np.isfinite(candidate):
-                        lstm_pred = candidate
-                        lstm_used = True
-                        reason = "ok"
-                    else:
-                        reason = "non_finite_output"
-            except Exception as exc:
-                reason = f"lstm_error:{type(exc).__name__}"
-    else:
-        reason = "lstm_unavailable"
-        w_lstm, w_xgb = 0.0, 1.0
-
-    hybrid = float(w_xgb * xgb_pred + w_lstm * lstm_pred)
-    
-    info = {
-        "lstm_used": lstm_used,
-        "lstm_reason": reason,
-        "w_xgb": round(w_xgb, 4),
-        "w_lstm": round(w_lstm, 4),
-    }
-    
-    # Add quantile predictions if available
-    if quantile_models is not None and feature_cols is not None:
-        feat_df = pd.DataFrame([row_dict])[feature_cols]
-        for q in [0.05, 0.5, 0.95]:
-            if q in quantile_models:
-                info[f"q_{int(q*100)}"] = float(quantile_models[q].predict(feat_df)[0])
-    
-    if return_info:
-        return hybrid, xgb_pred, lstm_pred, info
-    return hybrid, xgb_pred, lstm_pred
+def sample_month_forecast(h, d, model, feats, seasonal=True):
+    """Hourly forecast for the 62 days after the sample data ends (real dates)."""
+    origin = len(d) - 1
+    F = daily_features(d, origin, seasonal)
+    daily_kwh = np.maximum(model.predict(F[feats]), 0.0)
+    shape = hourly_shape(h)
+    start = d.index[origin] + pd.Timedelta(days=1)
+    rows = []
+    for i, kwh in enumerate(daily_kwh):
+        day = start + pd.Timedelta(days=i)
+        frac = shape.loc[day.dayofweek].values
+        for hour in range(24):
+            rows.append((day + pd.Timedelta(hours=hour), kwh * frac[hour]))
+    out = pd.DataFrame(rows, columns=["datetime", "predicted_kw"])
+    out["predicted_kwh"] = out["predicted_kw"]
+    out["day"] = out["datetime"].dt.date
+    out["hour"] = out["datetime"].dt.hour
+    return out
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Main entry point
-# ──────────────────────────────────────────────────────────────────────
-
-def main():
+# ----------------------------------------------------------------- main
+def main(skip_lstm: bool = False):
     os.makedirs(MODEL_DIR, exist_ok=True)
-
+    started = time.time()
     df = load_data()
-    train, test = split_time(df)
-    y_test = test[TARGET].values
+    X, y, h = hourly_training_set(df)
+    n = len(X)
+    a, b = int(n * TRAIN_FRAC), int(n * (TRAIN_FRAC + VAL_FRAC))
+    Xtr, ytr, Xva, yva, Xte, yte = X.iloc[:a], y.iloc[:a], X.iloc[a:b], y.iloc[a:b], X.iloc[b:], y.iloc[b:]
+    _log(f"Hourly rows {n}: train to {X.index[a - 1]}, validation to {X.index[b - 1]}, test to {X.index[-1]}")
+    yv, yt = yva.values, yte.values
 
-    # Train both models
-    xgb_model, xgb_preds, xgb_mae = train_xgboost(train, test)
-    lstm_model, scaler, lstm_preds, lstm_mae = train_lstm(train, test)
-
-    # Combine into hybrid
-    w_xgb, w_lstm = hybrid_weights(xgb_mae, lstm_mae)
-    _, h_mae = compute_hybrid(xgb_preds, lstm_preds, y_test, weights=(w_xgb, w_lstm))
-    _, equal_mae = compute_hybrid(xgb_preds, lstm_preds, y_test, weights=(0.5, 0.5))
-
-    # Print comparison
-    print(f"\n{'=' * 55}")
-    print("  MODEL COMPARISON (lower MAE = better)")
-    print("-" * 55)
-    print(f"  {'Model':<18} {'MAE (kW)':>12}")
-    print("-" * 55)
-    print(f"  {'XGBoost':<18} {xgb_mae:>12.4f}")
-    print(f"  {'LSTM':<18} {lstm_mae:>12.4f}")
-    print(f"  {'Hybrid 50/50':<18} {equal_mae:>12.4f}")
-    print(f"  {'Hybrid weighted':<18} {h_mae:>12.4f}   "
-          f"(XGBoost {w_xgb:.3f} / LSTM {w_lstm:.3f})")
-    print("=" * 55)
-
-    # Save XGBoost model
-    xgb_path = os.path.join(MODEL_DIR, "xgboost_model.pkl")
-    with open(xgb_path, "wb") as f:
-        pickle.dump(xgb_model, f)
-    print(f"\n[OK] XGBoost model  -> {xgb_path}")
-
-    # Save LSTM model
-    lstm_path = os.path.join(MODEL_DIR, "lstm_model.keras")
-    lstm_model.save(lstm_path)
-    print(f"[OK] LSTM model     -> {lstm_path}")
-
-    # Save scaler (needed at inference time for LSTM inputs)
-    scaler_path = os.path.join(MODEL_DIR, "lstm_scaler.pkl")
-    with open(scaler_path, "wb") as f:
-        pickle.dump(scaler, f)
-    print(f"[OK] LSTM scaler    -> {scaler_path}")
-
-    # Save model metadata for the dashboard
-    meta_path = os.path.join(MODEL_DIR, "model_meta.pkl")
-    meta = {
-        "xgb_mae": xgb_mae,
-        "lstm_mae": lstm_mae,
-        "hybrid_mae": h_mae,
-        "hybrid_mae_equal": equal_mae,
-        "hybrid_weights": (w_xgb, w_lstm),
-        "feature_cols": FEATURE_COLS,
-        "target": TARGET,
-        "window_size": WINDOW_SIZE,
+    _log("\n== Baselines (test) ==")
+    baselines = {
+        "persistence": _mae(yt, Xte["lag_0"]),
+        "same_hour_yesterday": _mae(yt, Xte["same_hour_d1"]),
+        "same_hour_last_week": _mae(yt, Xte["same_hour_d7"]),
+        "same_hour_mean_7_days": _mae(yt, Xte["same_hour_mean7"]),
     }
-    with open(meta_path, "wb") as f:
-        pickle.dump(meta, f)
-    print(f"[OK] Model metadata -> {meta_path}")
+    for k, v in baselines.items():
+        _log(f"  {k:24s} MAE {v:.4f} kW")
 
-    # Generate and save next-month forecast
-    forecast = next_month_forecast(xgb_model, df)
-    forecast_path = os.path.join(DATA_DIR, "next_month_forecast.csv")
-    forecast.to_csv(forecast_path, index=False)
-    print(f"[OK] Next-month forecast -> {forecast_path}")
+    _log("\n== XGBoost ==")
+    xgb_model, xgb_params = train_xgboost(Xtr, ytr, Xva, yva)
+    px_va, px_te_trainonly = xgb_model.predict(Xva), xgb_model.predict(Xte)
+
+    w_lstm, lstm_model, scaling = 0.0, None, None
+    pl_va = np.full(len(yv), np.nan)
+    pl_te = np.full(len(yt), np.nan)
+    pl_te_trainonly = pl_te
+    if not skip_lstm:
+        _log("\n== LSTM ==")
+        try:
+            lstm_model, scaling = train_lstm(h, Xtr.index, ytr.values, Xva.index, yv)
+            pl_va = lstm_predict(lstm_model, scaling, h, Xva.index)
+            pl_te_trainonly = lstm_predict(lstm_model, scaling, h, Xte.index)
+            w_lstm = best_blend(yv, px_va, pl_va)
+        except Exception as exc:                       # keep XGBoost if TensorFlow fails
+            _log(f"  LSTM skipped: {type(exc).__name__}: {exc}")
+            lstm_model = None
+    ph_va = blend(px_va, pl_va, w_lstm)
+    trainonly_mae = _mae(yt, blend(px_te_trainonly, pl_te_trainonly if lstm_model is not None else pl_te, w_lstm))
+
+    # Final models: every choice above is kept fixed and the models are refit on
+    # train + validation, so they also learn from the most recent history.  The
+    # test period is still unseen.
+    _log("\n== Refit on train + validation ==")
+    scale = b / a
+    Xtv, ytv = X.iloc[:b], y.iloc[:b]
+    xgb_model = refit_xgboost(Xtv, ytv, xgb_params, scale)
+    xgb_params = dict(xgb_params, n_estimators=xgb_model.get_params()["n_estimators"])
+    px_te = xgb_model.predict(Xte)
+    if lstm_model is not None and w_lstm > 0:
+        lstm_model = refit_lstm(h, Xtv.index, ytv.values, scaling, scale)
+        pl_te = lstm_predict(lstm_model, scaling, h, Xte.index)
+    elif lstm_model is not None:
+        pl_te = pl_te_trainonly
+    ph_te = blend(px_te, pl_te, w_lstm)
+    _log(f"  test MAE: train-only models {trainonly_mae:.4f} -> refit models {_mae(yt, ph_te):.4f}")
+
+    _log("\n== 90% band ==")
+    q, offset = train_interval(Xtr, ytr, Xva, yva)
+    lo, hi = band(q, offset, Xte)
+    coverage = float(np.mean((yt >= lo) & (yt <= hi)))
+    _log(f"  conformal offset {offset:.4f} kW; test coverage {coverage:.3f}; mean width {np.mean(hi - lo):.3f} kW")
+
+    _log("\n== Power-only variant (for data without sub-meter readings) ==")
+    power_feats = [c for c in X.columns if not any(c.startswith(m) for m in MEASUREMENTS)]
+    _, power_params = train_xgboost(Xtr[power_feats], ytr, Xva[power_feats], yva,
+                                    only={k: v for k, v in xgb_params.items() if k != "n_estimators"})
+    xgb_power = refit_xgboost(Xtv[power_feats], ytv, power_params, scale)
+    pp_te = np.maximum(xgb_power.predict(Xte[power_feats]), 0.0)
+    q_p, offset_p = train_interval(Xtr[power_feats], ytr, Xva[power_feats], yva)
+    lo_p, hi_p = band(q_p, offset_p, Xte[power_feats])
+    power_only = {
+        "features": power_feats,
+        "interval_offset_kw": offset_p,
+        "mae_kw": round(_mae(yt, pp_te), 4),
+        "improvement_over_persistence_pct": round((1 - _mae(yt, pp_te) / baselines["persistence"]) * 100, 1),
+        "interval": {"test_coverage": round(float(np.mean((yt >= lo_p) & (yt <= hi_p))), 4),
+                     "mean_width_kw": round(float(np.mean(hi_p - lo_p)), 4)},
+    }
+    _log(f"  power-only XGBoost test MAE {power_only['mae_kw']} "
+         f"({power_only['improvement_over_persistence_pct']}% better than persistence); "
+         f"band coverage {power_only['interval']['test_coverage']}")
+
+    lm = np.isfinite(pl_te)
+    hourly_metrics = {
+        "test_rows": int(len(yt)),
+        "test_mean_kw": round(float(np.mean(yt)), 4),
+        "mae_kw": {
+            "hybrid": round(_mae(yt, ph_te), 4),
+            "xgboost": round(_mae(yt, px_te), 4),
+            "lstm": round(_mae(yt[lm], pl_te[lm]), 4) if lm.any() else None,
+            **{k: round(v, 4) for k, v in baselines.items()},
+        },
+        "rmse_kw": {"hybrid": round(_rmse(yt, ph_te), 4), "persistence": round(_rmse(yt, Xte["lag_0"]), 4)},
+        "improvement_over_persistence_pct": round((1 - _mae(yt, ph_te) / baselines["persistence"]) * 100, 1),
+        "hybrid_mae_train_only_models_kw": round(trainonly_mae, 4),
+        "validation_mae_kw": {"hybrid": round(_mae(yv, ph_va), 4), "xgboost": round(_mae(yv, px_va), 4),
+                              "lstm": round(_mae(yv[np.isfinite(pl_va)], pl_va[np.isfinite(pl_va)]), 4)
+                              if np.isfinite(pl_va).any() else None},
+        "interval": {"nominal": NOMINAL_COVERAGE, "test_coverage": round(coverage, 4),
+                     "mean_width_kw": round(float(np.mean(hi - lo)), 4), "conformal_offset_kw": round(offset, 5)},
+    }
+    _log("\n== Next hour, test period ==")
+    for k, v in hourly_metrics["mae_kw"].items():
+        _log(f"  {k:24s} MAE {v}")
+    _log(f"  hybrid beats persistence by {hourly_metrics['improvement_over_persistence_pct']}%")
+
+    _log("\n== Bill forecast (daily energy) ==")
+    d = daily_energy(h)
+    nd = len(d)
+    a_day, b_day = int(nd * TRAIN_FRAC), int(nd * (TRAIN_FRAC + VAL_FRAC))
+    test_origins = range(b_day, nd - 30)
+    daily = {}
+    for seasonal, key in ((True, "daily_seasonal"), (False, "daily_generic")):
+        model, feats = train_daily(d, a_day, b_day, seasonal)
+        daily[key] = {"features": feats, "test": daily_metrics(d, model, feats, test_origins, seasonal)}
+        with open(PATHS[key], "wb") as fh:
+            pickle.dump(model, fh)
+        _log(f"  {key}: {json.dumps(daily[key]['test']['next_30_days'])}")
+        if seasonal:
+            forecast = sample_month_forecast(h, d, model, feats, seasonal=True)
+            forecast.to_csv(os.path.join(DATA_DIR, "next_month_forecast.csv"), index=False)
+
+    # ---- save
+    xgb_model.save_model(PATHS["xgb"])
+    xgb_power.save_model(PATHS["xgb_power"])
+    for alpha, key in ((0.05, "q05_power"), (0.95, "q95_power")):
+        with open(PATHS[key], "wb") as fh:
+            pickle.dump(q_p[alpha], fh)
+    if lstm_model is not None:
+        lstm_model.save(PATHS["lstm"])
+        with open(PATHS["lstm_scaling"], "w") as fh:
+            json.dump(scaling, fh)
+    for alpha, key in ((0.05, "q05"), (0.95, "q95")):
+        with open(PATHS[key], "wb") as fh:
+            pickle.dump(q[alpha], fh)
+
+    import sklearn
+    versions = {"python": platform.python_version(), "sklearn": sklearn.__version__}
+    try:
+        import xgboost
+        versions["xgboost"] = xgboost.__version__
+    except ImportError:
+        pass
+    if lstm_model is not None:
+        import tensorflow
+        versions["tensorflow"] = tensorflow.__version__
+    meta = {
+        "created": pd.Timestamp.now().isoformat(timespec="seconds"),
+        "split": {"train_until": str(X.index[a - 1]), "validation_until": str(X.index[b - 1]),
+                  "test_until": str(X.index[-1]), "fractions": [TRAIN_FRAC, VAL_FRAC, 1 - TRAIN_FRAC - VAL_FRAC]},
+        "hourly_features": list(X.columns),
+        "xgb_params": xgb_params,
+        "blend": {"w_xgb": round(1 - w_lstm, 2), "w_lstm": round(w_lstm, 2),
+                  "chosen_on": "validation MAE", "lstm_available": lstm_model is not None},
+        "interval_offset_kw": offset,
+        "hourly": hourly_metrics,
+        "power_only": power_only,
+        "daily": daily,
+        "versions": versions,
+        "training_seconds": round(time.time() - started),
+    }
+    with open(PATHS["meta"], "w") as fh:
+        json.dump(meta, fh, indent=2)
+    _log(f"\nSaved models to {MODEL_DIR}/ in {meta['training_seconds']}s")
+    return meta
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    main(skip_lstm="--no-lstm" in sys.argv)
