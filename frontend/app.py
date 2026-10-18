@@ -4,12 +4,20 @@ EnergyPulse — Home Electricity Dashboard
 Smart home energy monitoring, predictions, cost tracking,
 appliance breakdown, optimization tips, and usage trends.
 
-Launch:
-    streamlit run app.py
+Launch (from the project folder):
+    streamlit run frontend/app.py
 """
 
 import os
+import sys
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
+# The screens live in frontend/, the logic in backend/; make both importable
+# whichever folder the app is started from.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _dir in (os.path.join(_ROOT, "frontend"), os.path.join(_ROOT, "backend")):
+    if _dir not in sys.path:
+        sys.path.insert(0, _dir)
 
 import copy
 import calendar as cal
@@ -102,8 +110,7 @@ def render_language_selector(key="lang_select", centered=False):
         st.rerun()
 
 # ── Paths ───────────────────────────────────────────────────
-DATA_DIR = "data"
-MODEL_DIR = "models"
+from paths import DATA_DIR, MODEL_DIR
 
 
 # ── Page config ───────────────────────────────────────────────

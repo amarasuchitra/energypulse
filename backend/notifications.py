@@ -690,7 +690,8 @@ def load_prediction_stats(tariff_rate: float = 8.0) -> Dict[str, Any]:
     from cost import next_month_cost
     from model import load_data
     from data import remap_to_current_dates, shift_forecast_to_current_dates
-    path = os.path.join("data", "next_month_forecast.csv")
+    from paths import DATA_DIR
+    path = os.path.join(DATA_DIR, "next_month_forecast.csv")
     if os.path.exists(path):
         forecast_df = pd.read_csv(path, parse_dates=["datetime"])
         raw = load_data()

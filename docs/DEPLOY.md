@@ -4,7 +4,7 @@
 
 1. Put this folder in a GitHub repository (private is fine).
 2. Go to https://share.streamlit.io, sign in with GitHub, choose **Create app**.
-3. Pick the repository and branch, set **Main file path** to `app.py`, and under
+3. Pick the repository and branch, set **Main file path** to `frontend/app.py`, and under
    **Advanced settings** choose Python 3.11.
 4. In **Advanced settings > Secrets**, add:
 

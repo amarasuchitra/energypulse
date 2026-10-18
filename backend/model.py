@@ -35,7 +35,7 @@ Artifacts (models/):
 and data/next_month_forecast.csv for the bundled sample.
 
 Run after data.py:
-    python model.py
+    python backend/model.py
 """
 
 import json
@@ -53,8 +53,7 @@ from forecast_features import (
     hourly_shape, hourly_training_set, lstm_frame,
 )
 
-DATA_DIR = "data"
-MODEL_DIR = "models"
+from paths import DATA_DIR, MODEL_DIR
 CLEAN_CSV = os.path.join(DATA_DIR, "cleaned_energy_data.csv")
 SEED = 42
 TRAIN_FRAC, VAL_FRAC = 0.64, 0.16
@@ -82,7 +81,7 @@ PATHS = {
 def load_data() -> pd.DataFrame:
     """Load the cleaned CSV that data.py produced."""
     if not os.path.exists(CLEAN_CSV):
-        raise FileNotFoundError(f"{CLEAN_CSV} not found.\nRun:  python data.py")
+        raise FileNotFoundError(f"{CLEAN_CSV} not found.\nRun:  python backend/data.py")
     return pd.read_csv(CLEAN_CSV, parse_dates=["datetime"])
 
 

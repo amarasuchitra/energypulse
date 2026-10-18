@@ -22,7 +22,7 @@ import secrets
 import pandas as pd
 
 
-DB_PATH = "energypulse.db"
+from paths import DB_PATH
 
 
 class DatabaseManager:

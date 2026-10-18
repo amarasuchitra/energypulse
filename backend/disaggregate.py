@@ -26,7 +26,7 @@ recording, export it to CSV (one mains column plus one column per appliance)
 and call load_labelled_csv() - see the bottom of this file.
 
 Run:
-    python disaggregate.py          # train, evaluate, save to models/
+    python backend/disaggregate.py         # train, evaluate, save to models/
 """
 
 import json
@@ -40,8 +40,9 @@ from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostin
 
 from appliance_profiles import APPLIANCE_KEYS, DEFAULT_PROFILES
 
-MODEL_PATH = os.path.join("models", "nilm_model.pkl")
-METRICS_PATH = os.path.join("models", "nilm_metrics.json")
+from paths import MODEL_DIR
+MODEL_PATH = os.path.join(MODEL_DIR, "nilm_model.pkl")
+METRICS_PATH = os.path.join(MODEL_DIR, "nilm_metrics.json")
 
 # The model uses readings after the minute it is judging as well as before.
 # The short windows that matter most reach 30 minutes ahead, so the freshest

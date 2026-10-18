@@ -123,7 +123,8 @@ def _forecast_for_alerts():
     from data import remap_to_current_dates, shift_forecast_to_current_dates
     from model import load_data
 
-    path = os.path.join("data", "next_month_forecast.csv")
+    from paths import DATA_DIR
+    path = os.path.join(DATA_DIR, "next_month_forecast.csv")
     if not os.path.exists(path):
         return None
     forecast_df = pd.read_csv(path, parse_dates=["datetime"])

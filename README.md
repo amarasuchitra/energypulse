@@ -20,20 +20,20 @@ dataset (34,168 hourly rows, December 2006 – November 2010) and a trained
 - **The smallest change that keeps most of the saving.** Among times that keep 90% of the best saving, the one closest to the current habit is chosen; changes under 15 minutes or under Rs. 0.25 a run are left out.
 - **Common sense built in.** A geyser or water pump is only moved earlier, never after the water is needed; a geyser at most 2 hours earlier, with its heat loss while waiting taken off the saving. A washing machine moves at most 4 hours, in waking hours.
 - **Written like an energy advisor.** Each tip says what the habit is now, what it costs, the new time, why it is safe, the saving per month and per year, and a practical tip.
-- Measured on 5 simulated homes, the previous planner moved hot water or pumping to after it was needed in 137 of 243 moves, by 4.9 hours on average; the new one never does, moves by 1.4 hours on average and needs about 2 times per home to remember. Details in [AUDIT.md](AUDIT.md), section 6.
+- Measured on 5 simulated homes, the previous planner moved hot water or pumping to after it was needed in 137 of 243 moves, by 4.9 hours on average; the new one never does, moves by 1.4 hours on average and needs about 2 times per home to remember. Details in [AUDIT.md](docs/AUDIT.md), section 6.
 
 ## Live monitoring, alerts and saved appliances (V4.5)
 
-- **A forecast for the live meter.** The dashboard's simulated meter now has its own next-hour model, trained on simulated homes and tested on others it never saw (results in [MODEL_REPORT.md](MODEL_REPORT.md)). The card shows the hour it is for, a 90% range and when it was made. The live reading updates every second.
+- **A forecast for the live meter.** The dashboard's simulated meter now has its own next-hour model, trained on simulated homes and tested on others it never saw (results in [MODEL_REPORT.md](docs/MODEL_REPORT.md)). The card shows the hour it is for, a 90% range and when it was made. The live reading updates every second.
 - **Overconsumption alerts.** Each forecast is stored before its hour; when actual use stays above it (default: 15% and 0.15 kWh, two hours running) you get one alert with the numbers, the appliance that rose most and what to do. It re-arms once use is back to normal. Set the limits under **Settings → Usage alerts**. Email is sent only when SMTP is configured, and the history says whether it was really sent.
 - **Edit appliances.** Quantity and hours a day per appliance, add and remove, with **Save** and **Cancel**. Saved per household in the database and checked before saving; changes feed the forecast and the plan right away.
 - **Plan check.** The Optimize tab shows baseline vs optimised cost, energy and peak, and confirms every moved run respects your hours and the load limit. Energy savings from tips are marked as estimates.
 - **No raw errors on screen.** Problems are logged (`ENERGYPULSE_LOG_LEVEL`) and the dashboard shows a short message instead.
-- Full audit: [AUDIT.md](AUDIT.md).
+- Full audit: [AUDIT.md](docs/AUDIT.md).
 
 ## Honest forecasts and load-aware scheduling (V4.4)
 
-- **Leak-free forecasting.** The next-hour model now forecasts from the past only and is compared with simple baselines on data it never saw: 0.285 kW error, 28% better than "next hour = this hour". The bill forecast is off by 5% on a 30-day total, against 15% for a recent average. Details in [MODEL_REPORT.md](MODEL_REPORT.md).
+- **Leak-free forecasting.** The next-hour model now forecasts from the past only and is compared with simple baselines on data it never saw: 0.285 kW error, 28% better than "next hour = this hour". The bill forecast is off by 5% on a 30-day total, against 15% for a recent average. Details in [MODEL_REPORT.md](docs/MODEL_REPORT.md).
 - **Bill forecast on the right dates.** The next-month estimate and the calendar's upcoming days now line up with today's dates (they previously stayed in 2010), and uploads get a forecast from their own readings.
 - **Appliances planned together.** Shifting tips are planned jointly so moved appliances never stack above 85% of the sanctioned load (Bills & Safety settings), and several small moves are offered together when they add up. Tip generation is about 12x faster.
 - **Accuracy shown as it is.** The dashboard reports the measured error and the gain over the baseline instead of a "confidence" percentage.
@@ -44,7 +44,7 @@ dataset (34,168 hourly rows, December 2006 – November 2010) and a trained
 - **Guests leave nothing behind.** Logging out of a guest session deletes the guest's home, readings, settings, bills and photos. Guests who just close the tab are removed by an hourly job after a day (`db.delete_household`, `db.purge_stale_guests`).
 - **Background jobs that work.** The daily brief (07:00), bill alerts (09:00), weekly summary (Monday 10:00) and guest clean-up run in the app's process with APScheduler. They work from the saved home setup, family members and replayed meter readings, so nobody needs to have the app open (`scheduler_jobs.py`). A free host that sleeps only runs them while awake.
 - **Meter API as a data source.** Besides the sample data and a CSV upload, Settings > Data can fetch readings from a smart-meter or utility API that returns JSON or CSV, with an optional bearer token kept only for the session. Addresses on private networks are refused unless `ENERGYPULSE_ALLOW_PRIVATE_API=1` is set, for example when the app runs at home next to a meter gateway (`data_source.fetch_meter_api`).
-- **90% forecast band.** The next-hour card shows the range the next hour should fall in 9 times out of 10, from quantile models calibrated on held-out data (90.0% coverage on the test period; see MODEL_REPORT.md).
+- **90% forecast band.** The next-hour card shows the range the next hour should fall in 9 times out of 10, from quantile models calibrated on held-out data (90.0% coverage on the test period; see docs/MODEL_REPORT.md).
 - **Choose the model blend.** Settings > Forecast model: the blend chosen on validation data, or a custom XGBoost share, remembered per household (`ensemble.py`).
 - **Translations repaired.** About 25 Hindi, Kannada and Telugu strings on the data-source and setup screens were garbled and have been rewritten.
 
@@ -201,8 +201,8 @@ how long each appliance ran, abnormally long runs, and realistic suggestions.
 > is measured on simulated homes the model did not train on, and will be lower on a
 > real home. To train on a real recording, use `disaggregate.load_labelled_csv()`.
 
-Retrain with `python disaggregate.py`; run the tests with
-`pytest test_appliance_intelligence.py`.
+Retrain with `python backend/disaggregate.py`; run the tests with
+`pytest tests/test_appliance_intelligence.py`.
 
 ## New Features (V2.1)
 
@@ -334,11 +334,12 @@ source .venv/bin/activate       # macOS / Linux
 # 2. install dependencies
 pip install -r requirements.txt
 
-# 3. launch the dashboard
-streamlit run app.py
+# 3. launch the dashboard (from the project folder)
+streamlit run frontend/app.py
 ```
 
-The app then opens at `http://localhost:8501`.
+The app then opens at `http://localhost:8501`. On Windows you can instead double-click
+`scripts\run_energypulse.bat`, which creates the environment on first run.
 
 ## Running the tests
 
@@ -348,7 +349,7 @@ python -m pytest -q
 ```
 
 The monitoring, appliance-setup and forecast tests on their own:
-`python -m pytest -q test_monitoring.py test_home_config.py test_forecast_sim.py test_optimization.py`.
+`python -m pytest -q tests/test_monitoring.py tests/test_home_config.py tests/test_forecast_sim.py tests/test_optimization.py`.
 CI (`.github/workflows/ci.yml`) runs the same files.
 
 ## Notification setup
@@ -426,34 +427,46 @@ in **Notification history** with its status and error.
 ## Project structure
 
 ```
-majorproject/
-├── app.py                  # entry point (auth, dashboard + 8 tabs)
-├── chatbot.py              # grounded multilingual chatbot (tool-calling pipeline)
-├── features_ui.py          # Family / Notifications / Chat tab renderers
-├── notifications.py        # email (SendGrid/SMTP) + SMS (Twilio) dispatch
-├── llm_guard.py            # hallucination guard for numeric claims
-├── i18n.py                 # English/Hindi/Kannada/Telugu translations
-├── db.py                   # SQLite: users, family, notifications, chat
-├── cost.py                 # tariff/weekly/peak cost helpers
-├── data.py                 # UCI download, hourly aggregation, loaders
-├── data_source.py          # upload normalisation, units, capability detection
-├── appliances.py           # NILM sub-meter → appliance breakdown
-├── optimize.py             # optimization/insight rules
-├── model.py                # hybrid training, metrics, forecasting
-├── replay.py               # replays the active frame row by row
-├── convert_to_docx.py      # exports the conference paper to .docx
-├── test_csv_import.py      # 26 tests: upload formats, units, timestamps
-├── test_chatbot_routing.py # 38 tests: intent routing + guard number checks
-├── test_notifications.py   # 12 tests: backend status, ports, log types
-├── test_new_features.py    # feature suite (6 test groups, all green)
-├── requirements.txt
-├── .env.example            # email/SMS credential template
-└── .streamlit/config.toml  # dark theme
+energypulse/
+├── frontend/                  # what the user sees (Streamlit)
+│   ├── app.py                 # entry point: sign-in, dashboard, pages
+│   ├── appliance_ui.py        # Appliances and Optimize pages
+│   ├── appliance_manager.py   # "My appliances": catalogue, rating plate, photos
+│   ├── features_ui.py         # Family, Notifications, Energy chat
+│   ├── home_ui.py             # 3D home console (hosts home_component/)
+│   ├── toolkit_ui.py          # Bills, Safety, Upgrades, Goals, Help
+│   ├── shell_ui.py, motion.py # look, navigation, motion and toasts
+│   ├── home_component/        # three.js 3D home (HTML/JS/CSS)
+│   └── static/                # fonts served by Streamlit
+├── backend/                   # logic, models and data access (no UI)
+│   ├── forecast.py            # next-hour, live-meter and bill forecasts
+│   ├── model.py               # training and evaluation (writes models/)
+│   ├── forecast_features.py   # leak-free features
+│   ├── sim_dataset.py         # simulated homes for the live-meter model
+│   ├── scheduler.py           # human-like appliance scheduling + plan check
+│   ├── monitoring.py          # actual vs forecast, overconsumption alerts
+│   ├── notifications.py       # email (Gmail SMTP / SendGrid), SMS
+│   ├── scheduler_jobs.py      # background jobs (hourly checks, daily brief)
+│   ├── db.py, auth.py         # SQLite storage, accounts, sign-in
+│   ├── home_config.py         # validation of each household's appliances
+│   ├── disaggregate.py        # appliance detection from the main meter
+│   ├── meter_sim.py           # simulated smart meter
+│   ├── chatbot.py, llm_guard.py, i18n.py, ...
+│   └── paths.py               # where data/, models/ and docs/ are
+├── models/                    # trained models (committed)
+├── data/                      # dataset (personal data is git-ignored)
+├── tests/                     # pytest suite (python -m pytest)
+├── docs/                      # AUDIT.md, MODEL_REPORT.md, DEPLOY.md
+├── scripts/                   # Windows helpers: run, restart, test, train
+├── .streamlit/config.toml     # theme and server settings
+├── requirements.txt  runtime.txt  packages.txt
+├── Dockerfile  docker-compose.yml  Procfile
+└── .env.example               # template for email settings (copy to .env)
 ```
 
 ## How the model works
 
-Full method and results: **[MODEL_REPORT.md](MODEL_REPORT.md)** (generated from `models/forecast_meta.json`).
+Full method and results: **[MODEL_REPORT.md](docs/MODEL_REPORT.md)** (generated from `models/forecast_meta.json`).
 
 - **Data**: the UCI household dataset, 1-minute readings averaged to **34,168 hourly rows**
   (December 2006 - November 2010). Split in time order: train 64%, validation 16%, test 20%.
@@ -478,7 +491,8 @@ Full method and results: **[MODEL_REPORT.md](MODEL_REPORT.md)** (generated from 
   reported 0.012 kW error measured a nowcast, not a forecast. That leak is removed and tested
   (`test_prediction_pipeline.py`).
 - The LSTM loads only when the blend uses it; `ENERGYPULSE_DISABLE_LSTM=1` runs XGBoost alone.
-- Retrain with `python model.py` (about 13 minutes on a laptop CPU), then `python model_report.py`.
+- Retrain with `python backend/model.py` (about 20 minutes on a laptop CPU), then `python backend/model_report.py`.
+  The live-meter model alone: `python backend/train_sim_meter.py` (about 10 minutes).
 
 ## Using your own data
 

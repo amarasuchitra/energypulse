@@ -28,7 +28,8 @@ import threading
 import pandas as pd
 
 # Path to the cleaned CSV produced by data.py
-CLEAN_CSV = os.path.join("data", "cleaned_energy_data.csv")
+from paths import DATA_DIR
+CLEAN_CSV = os.path.join(DATA_DIR, "cleaned_energy_data.csv")
 
 
 class ReplaySimulator:
@@ -61,7 +62,7 @@ class ReplaySimulator:
         """Load the cleaned CSV into memory."""
         if not os.path.exists(self.csv_path):
             raise FileNotFoundError(
-                f"{self.csv_path} not found.\nRun:  python data.py"
+                f"{self.csv_path} not found.\nRun:  python backend/data.py"
             )
         self._df = pd.read_csv(self.csv_path, parse_dates=["datetime"])
 

@@ -1,7 +1,7 @@
 # EnergyPulse forecasting: model report
 
 Generated from `models/forecast_meta.json` (training run 2026-10-14T01:33:35).
-Regenerate both with `python model.py && python model_report.py`.
+Regenerate both with `python backend/model.py && python backend/model_report.py`.
 
 ## Data and evaluation
 

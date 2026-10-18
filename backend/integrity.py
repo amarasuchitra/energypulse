@@ -43,8 +43,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from db import DB_PATH
 
-KEY_FILE = os.path.join("data", ".integrity_key")
-BILL_DIR = os.path.join("data", "bills")
+from paths import DATA_DIR
+KEY_FILE = os.path.join(DATA_DIR, ".integrity_key")
+BILL_DIR = os.path.join(DATA_DIR, "bills")
 GENESIS = "0" * 64
 SEAL_MARK = "-----ENERGYPULSE SEAL-----"
 

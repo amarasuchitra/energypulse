@@ -2,7 +2,7 @@
 
 This report covers the audit requested in *"Complete Project Audit, AI Prediction, Optimization, and
 Dashboard Improvement"*: what was found, what was changed, how it was verified, and what is still open.
-Numbers come from `models/forecast_meta.json` (written by `python model.py`) and from the test suite;
+Numbers come from `models/forecast_meta.json` (written by `python backend/model.py`) and from the test suite;
 nothing here is estimated by hand.
 
 ## 1. Audit findings (before this round)

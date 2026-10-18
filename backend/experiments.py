@@ -6,7 +6,7 @@ Rules (the same as model.py): every choice is made on the validation data; the
 test data is used only to report.  All variants are trained on the same rows,
 so the comparison is fair.
 
-    python experiments.py          -> experiments.json + printed table
+    python backend/experiments.py   -> docs/experiments.json + printed table
 
 Part A: the real home (UCI).  Calendar features (French public holidays, time
 of year) and LightGBM, alone and blended with XGBoost.
@@ -15,6 +15,7 @@ Part B: the simulated meter.  Context the app already knows before the hour
 LightGBM.
 """
 import json
+import os
 import time
 
 import numpy as np
@@ -181,7 +182,8 @@ def part_sim():
 def main():
     started = time.time()
     results = part_uci() + part_sim()
-    with open("experiments.json", "w", encoding="utf-8") as fh:
+    from paths import DOCS_DIR
+    with open(os.path.join(DOCS_DIR, "experiments.json"), "w", encoding="utf-8") as fh:
         json.dump({"created": pd.Timestamp.now().isoformat(timespec="seconds"), "results": results}, fh, indent=1)
     log("\n== Summary (choose by validation; test shown for the record) ==")
     for r in results:

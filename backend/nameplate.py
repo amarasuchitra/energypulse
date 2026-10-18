@@ -20,7 +20,8 @@ import os
 import re
 from typing import Optional, Tuple
 
-PHOTO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "photos")
+from paths import DATA_DIR
+PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 PHOTO_TYPES = ["jpg", "jpeg", "png", "webp"]
 
 

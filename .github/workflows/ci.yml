@@ -33,39 +33,39 @@ jobs:
       
       - name: Run prediction pipeline tests
         run: |
-          python -m pytest test_prediction_pipeline.py -v
+          python -m pytest tests/test_prediction_pipeline.py -v
       
       - name: Run new features tests
         run: |
-          python -m pytest test_new_features.py -v --tb=short
+          python -m pytest tests/test_new_features.py -v --tb=short
       
       - name: Run CSV import tests
         run: |
-          python -m pytest test_csv_import.py -v --tb=short
+          python -m pytest tests/test_csv_import.py -v --tb=short
       
       - name: Run toolkit tests
         run: |
-          python -m pytest test_toolkit.py -v --tb=short
+          python -m pytest tests/test_toolkit.py -v --tb=short
       
       - name: Run all other tests
         run: |
-          python -m pytest test_appliance_intelligence.py test_chatbot_routing.py test_notifications.py -v --tb=short
+          python -m pytest tests/test_appliance_intelligence.py tests/test_chatbot_routing.py tests/test_notifications.py -v --tb=short
 
       - name: Run scheduler, sign-in, meter API, ensemble and interval tests
         run: |
-          python -m pytest test_scheduler_jobs.py test_remember_me.py test_meter_api.py test_ensemble.py test_optimization.py -v --tb=short
+          python -m pytest tests/test_scheduler_jobs.py tests/test_remember_me.py tests/test_meter_api.py tests/test_ensemble.py tests/test_optimization.py -v --tb=short
 
       - name: Run monitoring and appliance-setup tests
         run: |
-          python -m pytest test_monitoring.py test_home_config.py test_forecast_sim.py -v --tb=short
+          python -m pytest tests/test_monitoring.py tests/test_home_config.py tests/test_forecast_sim.py -v --tb=short
       
       - name: Check imports
         run: |
-          python -c "import app; print('App imports OK')"
+          python -c "import sys; sys.path[:0] = ['frontend', 'backend']; import app; print('App imports OK')"
       
       - name: Lint (basic)
         run: |
-          python -m py_compile app.py db.py auth.py model.py data.py replay.py notifications.py scheduler_jobs.py data_source.py ensemble.py forecast.py forecast_features.py scheduler.py
+          python -m compileall -q frontend backend tests
           echo "Syntax check passed"
 
   docker:

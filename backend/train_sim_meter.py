@@ -3,7 +3,7 @@ Retrain only the simulated meter's next-hour model (about 6-10 minutes) and
 update its entry in models/forecast_meta.json.  The real-home models are left
 as they are.
 
-    python train_sim_meter.py && python model_report.py
+    python backend/train_sim_meter.py && python backend/model_report.py
 """
 import json
 import os

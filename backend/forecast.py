@@ -23,7 +23,7 @@ from forecast_features import (
     hourly_features, hourly_shape, lstm_frame, to_hourly,
 )
 
-MODEL_DIR = "models"
+from paths import MODEL_DIR
 
 
 class Forecaster:

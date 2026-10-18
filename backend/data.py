@@ -11,7 +11,7 @@ Dataset columns:
   Sub_metering_3 (water heater + AC)
 
 Run FIRST before anything else:
-    python data.py
+    python backend/data.py
 """
 
 import json
@@ -24,7 +24,7 @@ import pandas as pd
 
 
 # ── Paths ──────────────────────────────────────────────────────────────
-DATA_DIR = "data"
+from paths import DATA_DIR
 RAW_TXT = os.path.join(DATA_DIR, "household_power_consumption.txt")
 CLEAN_CSV = os.path.join(DATA_DIR, "cleaned_energy_data.csv")
 SAMPLE_META_PATH = os.path.join(DATA_DIR, "sample_meta.json")

@@ -1,7 +1,7 @@
 """
-Write MODEL_REPORT.md from models/forecast_meta.json (produced by model.py).
+Write docs/MODEL_REPORT.md from models/forecast_meta.json (produced by model.py).
 
-    python model_report.py
+    python backend/model_report.py
 """
 import json
 import os
@@ -99,7 +99,7 @@ compares XGBoost at its usual settings with LightGBM.)
     return f"""# EnergyPulse forecasting: model report
 
 Generated from `models/forecast_meta.json` (training run {meta['created']}).
-Regenerate both with `python model.py && python model_report.py`.
+Regenerate both with `python backend/model.py && python backend/model_report.py`.
 
 ## Data and evaluation
 
@@ -190,14 +190,16 @@ Software: {versions}. Training took {meta['training_seconds']} s.
 
 
 def main():
-    with open(os.path.join("models", "forecast_meta.json"), encoding="utf-8") as fh:
+    from paths import DOCS_DIR, MODEL_DIR
+    with open(os.path.join(MODEL_DIR, "forecast_meta.json"), encoding="utf-8") as fh:
         meta = json.load(fh)
-    if os.path.exists("experiments.json"):
-        with open("experiments.json", encoding="utf-8") as fh:
+    exp_path = os.path.join(DOCS_DIR, "experiments.json")
+    if os.path.exists(exp_path):
+        with open(exp_path, encoding="utf-8") as fh:
             meta["_experiments"] = json.load(fh)
-    with open("MODEL_REPORT.md", "w", encoding="utf-8") as fh:
+    with open(os.path.join(DOCS_DIR, "MODEL_REPORT.md"), "w", encoding="utf-8") as fh:
         fh.write(render(meta))
-    print("Wrote MODEL_REPORT.md")
+    print("Wrote docs/MODEL_REPORT.md")
 
 
 if __name__ == "__main__":

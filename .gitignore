@@ -38,9 +38,9 @@ energypulse.db
 *.keras
 *.h5
 
-# ...except the trained forecasting models, which are committed (~10 MB) so that a
-# fresh clone can run `streamlit run app.py` without retraining first.
-# Regenerate with: python data.py && python model.py
+# ...except the trained forecasting models, which are committed so that a fresh
+# clone can run `streamlit run frontend/app.py` without retraining first.
+# Regenerate with: python backend/data.py && python backend/model.py
 !models/forecast_q05.pkl
 !models/forecast_q95.pkl
 !models/forecast_q05_power.pkl
@@ -52,10 +52,11 @@ energypulse.db
 !models/daily_generic.pkl
 
 # Raw UCI dataset (~127 MB — exceeds GitHub's 100 MB per-file limit).
-# Regenerate anytime with: python data.py (auto-downloads).
+# Regenerate anytime with: python backend/data.py (auto-downloads).
 data/household_power_consumption.txt
 
-# Runtime logs (accidentally committed earlier; kept out of the repo now)
+# Runtime logs (the Windows scripts write to logs/)
+logs/
 app_*.log
 stderr*.txt
 stdout*.txt
