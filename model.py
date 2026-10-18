@@ -66,6 +66,7 @@ PATHS = {
     "q05_power": os.path.join(MODEL_DIR, "forecast_q05_power.pkl"),
     "q95_power": os.path.join(MODEL_DIR, "forecast_q95_power.pkl"),
     "xgb_sim": os.path.join(MODEL_DIR, "forecast_xgb_sim.json"),
+    "lgb_sim": os.path.join(MODEL_DIR, "forecast_lgb_sim.txt"),
     "q05_sim": os.path.join(MODEL_DIR, "forecast_q05_sim.pkl"),
     "q95_sim": os.path.join(MODEL_DIR, "forecast_q95_sim.pkl"),
     "lstm": os.path.join(MODEL_DIR, "forecast_lstm.keras"),
@@ -347,6 +348,32 @@ def sample_month_forecast(h, d, model, feats, seasonal=True):
 
 
 # ----------------------------------------------------------------- simulated meter
+LGB_GRID = [
+    dict(num_leaves=63, learning_rate=0.02, min_child_samples=40, subsample=0.7, subsample_freq=1,
+         colsample_bytree=0.6, reg_lambda=5.0),
+    dict(num_leaves=31, learning_rate=0.03, min_child_samples=20, subsample=0.8, subsample_freq=1,
+         colsample_bytree=0.7, reg_lambda=1.0),
+    dict(num_leaves=127, learning_rate=0.02, min_child_samples=80, subsample=0.7, subsample_freq=1,
+         colsample_bytree=0.5, reg_lambda=10.0),
+]
+
+
+def train_lightgbm(Xtr, ytr, Xva, yva, grid=LGB_GRID):
+    """LightGBM on absolute error, early-stopped on validation; the best setting by validation MAE."""
+    import lightgbm as lgb
+    best = None
+    for params in grid:
+        t = time.time()
+        m = lgb.LGBMRegressor(objective="l1", n_estimators=8000, random_state=SEED, n_jobs=-1, verbose=-1, **params)
+        m.fit(Xtr, ytr, eval_set=[(Xva, yva)], eval_metric="l1", callbacks=[lgb.early_stopping(200, verbose=False)])
+        mae = _mae(yva, m.predict(Xva))
+        _log(f"  LightGBM {params} -> val MAE {mae:.4f} ({m.best_iteration_} trees, {time.time() - t:.0f}s)")
+        if best is None or mae < best[0]:
+            best = (mae, m, params)
+    _log(f"  LightGBM chosen: {best[2]}  val MAE {best[0]:.4f}")
+    return best[1], dict(best[2], n_estimators=int(best[1].best_iteration_)), best[0]
+
+
 # Use the weather and household context (sim_dataset.CONTEXT_FEATURES) in the
 # simulated-meter model.  Decided by experiments.py on validation homes.
 SIM_CONTEXT = True
@@ -366,7 +393,17 @@ def train_simulated_meter(xgb_params):
          f"{len(sd.TEST_SEEDS)} test ({len(ytr):,} / {len(yva):,} / {len(yte):,} hours; built in {time.time() - t:.0f}s)")
     model, params = train_xgboost(Xtr, ytr, Xva, yva,
                                   only={k: v for k, v in xgb_params.items() if k != "n_estimators"})
-    p = np.maximum(model.predict(Xte), 0.0)
+    val_xgb = _mae(yva, model.predict(Xva))
+    p_xgb = np.maximum(model.predict(Xte), 0.0)
+    chosen, p, lgb_params, p_lgb = "xgboost", p_xgb, None, None
+    try:
+        lgb_model, lgb_params, val_lgb = train_lightgbm(Xtr, ytr, Xva, yva)
+        p_lgb = np.maximum(lgb_model.predict(Xte), 0.0)
+        if val_lgb < val_xgb:                       # chosen on validation homes, never on test
+            chosen, p = "lightgbm", p_lgb
+    except ImportError:
+        _log("  LightGBM not installed; keeping XGBoost")
+    _log(f"  live-meter model chosen on validation: {chosen}")
     q, offset = train_interval(Xtr, ytr, Xva, yva)
     lo, hi = band(q, offset, Xte)
     yt = yte.values
@@ -377,19 +414,27 @@ def train_simulated_meter(xgb_params):
         "homes": {"train": len(sd.TRAIN_SEEDS), "validation": len(sd.VALIDATION_SEEDS), "test": len(sd.TEST_SEEDS)},
         "test_hours": int(len(yt)),
         "test_mean_kw": round(float(np.mean(yt)), 4),
+        "model": chosen,
         "comparison": {
-            "xgboost": _scores(yt, p),
+            "chosen": _scores(yt, p),
+            "xgboost": _scores(yt, p_xgb),
+            **({"lightgbm": _scores(yt, p_lgb)} if p_lgb is not None else {}),
             "baseline_persistence": _scores(yt, Xte["lag_0"]),
             "baseline_same_hour_mean_7_days": _scores(yt, Xte["same_hour_mean7"]),
         },
         "interval": {"test_coverage": round(float(np.mean((yt >= lo) & (yt <= hi))), 4),
                      "mean_width_kw": round(float(np.mean(hi - lo)), 4)},
         "xgb_params": params,
+        "lgb_params": lgb_params,
     }
     best_base = min(out["comparison"]["baseline_persistence"]["mae_kw"],
                     out["comparison"]["baseline_same_hour_mean_7_days"]["mae_kw"])
-    out["improvement_over_best_baseline_pct"] = round((1 - out["comparison"]["xgboost"]["mae_kw"] / best_base) * 100, 1)
-    model.save_model(PATHS["xgb_sim"])
+    out["improvement_over_best_baseline_pct"] = round((1 - out["comparison"]["chosen"]["mae_kw"] / best_base) * 100, 1)
+    model.save_model(PATHS["xgb_sim"])                     # kept as the fallback when LightGBM is unavailable
+    if chosen == "lightgbm":
+        lgb_model.booster_.save_model(PATHS["lgb_sim"])
+    elif os.path.exists(PATHS["lgb_sim"]):
+        os.remove(PATHS["lgb_sim"])
     for alpha, key in ((0.05, "q05_sim"), (0.95, "q95_sim")):
         with open(PATHS[key], "wb") as fh:
             pickle.dump(q[alpha], fh)

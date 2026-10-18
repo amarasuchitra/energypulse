@@ -32,23 +32,31 @@ def render(meta: dict) -> str:
         f"| {name} | {v:.3f} | {_pct(v, mae['persistence']):+.1f}% |" if v is not None else f"| {name} | n/a | |"
         for name, v in rows)
     names = {"hybrid_xgboost_lstm": "Hybrid (XGBoost + LSTM)", "xgboost": "XGBoost", "lstm": "LSTM",
-             "random_forest": "Random forest", "linear_ridge": "Linear (ridge) regression",
+             "random_forest": "Random forest", "linear_ridge": "Linear (ridge) regression", "lightgbm": "LightGBM",
              "baseline_persistence": "Baseline: next hour = this hour",
              "baseline_same_hour_mean_7_days": "Baseline: mean of same hour, last 7 days"}
 
     def score_table(comp):
-        return "\n".join(f"| {names.get(k, k)} | {v['mae_kw']:.3f} | {v['rmse_kw']:.3f} | {v['r2']:.3f} |"
-                         for k, v in comp.items() if v)
+        return "\n".join(f"| {names.get(k, k)}{' (used by the app)' if k == chosen_key else ''} | {v['mae_kw']:.3f} | "
+                         f"{v['rmse_kw']:.3f} | {v['r2']:.3f} |"
+                         for k, v in comp.items() if v and k != "chosen")
+    chosen_key = None
     comparison = score_table(h.get("comparison", {})) or "| (not recorded in this training run) | | | |"
     sim = meta.get("simulated_meter")
     if sim:
         sc = sim["comparison"]
+        chosen_key = sim.get("model", "xgboost")
+        model_name = names.get(chosen_key, chosen_key)
+        ctx = sim.get("context_features") or []
+        ctx_words = (" plus what the app knows before the hour: the day's forecast temperature, the number of "
+                     "people, home size and which appliances the home has" if ctx else "")
         sim_section = f"""## Simulated meter: next-hour model
 
 The live dashboard reads a **simulated** smart meter (an Indian home built from the user's own appliance
 list), not a physical meter. The UCI model above does not transfer to it, so it has its own model:
-XGBoost on power-only features (the same lags, same-hour history and rolling statistics; no sub-meter
-readings), trained on {sim['homes']['train']} simulated homes, early-stopped on {sim['homes']['validation']}
+{model_name} on power-only features (the same lags, same-hour history and rolling statistics; no sub-meter
+readings){ctx_words}. XGBoost and LightGBM were both trained; the one with the lower error on the validation
+homes is used. Trained on {sim['homes']['train']} simulated homes, early-stopped on {sim['homes']['validation']}
 other homes and tested on {sim['homes']['test']} homes it never saw (different appliances, habits, sizes,
 cities and seasons; {sim['test_hours']:,} test hours, mean {sim['test_mean_kw']:.2f} kW).
 
@@ -66,6 +74,27 @@ cities and seasons; {sim['test_hours']:,} test hours, mean {sim['test_mean_kw']:
 """
     else:
         sim_section = ""
+    experiments_section = ""
+    exp = meta.get("_experiments")
+    if exp:
+        rows = "\n".join(f"| {'Real home' if r['part'] == 'uci' else 'Simulated meter'} | {r['model']} | "
+                         f"{r['val_mae']:.4f} | {r['test_mae_kw']:.4f} |" for r in exp["results"])
+        experiments_section = f"""## Experiments: what else was tried
+
+`experiments.py` ({exp['created'][:10]}) tried LightGBM, XGBoost + LightGBM blends, calendar features
+(French public holidays, time of year) on the real home, and weather and household context on the
+simulated meter. Choices were made on validation error only; test error is shown for the record.
+
+| Data | Model | Validation MAE (kW) | Test MAE (kW) |
+|---|---|---|---|
+{{rows}}
+
+Kept: LightGBM with weather and household context for the simulated meter (validation 0.0954 vs 0.0977
+for the previous XGBoost). Not kept: changes to the real-home model, whose best variant gained 0.5% on
+validation and 0.2% on test, too little to justify a second model there. (For speed, the
+simulated-meter XGBoost runs in this experiment used a learning rate of 0.05; the final training above
+compares XGBoost at its usual settings with LightGBM.)
+""".replace("{rows}", rows)
     versions = ", ".join(f"{k} {v}" for k, v in meta.get("versions", {}).items())
     return f"""# EnergyPulse forecasting: model report
 
@@ -117,6 +146,7 @@ baseline: the forecast is **{h['improvement_over_persistence_pct']:.0f}% more ac
 repeats this one.
 
 {sim_section}
+{experiments_section}
 ## Bill forecast (energy over the next 30 days)
 
 A gradient-boosted model forecasts each of the next 62 days from the last 90 days of daily energy
@@ -162,6 +192,9 @@ Software: {versions}. Training took {meta['training_seconds']} s.
 def main():
     with open(os.path.join("models", "forecast_meta.json"), encoding="utf-8") as fh:
         meta = json.load(fh)
+    if os.path.exists("experiments.json"):
+        with open("experiments.json", encoding="utf-8") as fh:
+            meta["_experiments"] = json.load(fh)
     with open("MODEL_REPORT.md", "w", encoding="utf-8") as fh:
         fh.write(render(meta))
     print("Wrote MODEL_REPORT.md")

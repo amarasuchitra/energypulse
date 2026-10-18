@@ -6,6 +6,7 @@ numpy>=1.24
 scikit-learn==1.9.1
 # The forecast models in models/ were trained with xgboost 3.2 and TensorFlow 2.21 (Keras 3).
 xgboost>=3.0,<4
+lightgbm>=4.3,<5
 tensorflow>=2.16,<3
 plotly>=5.24
 apscheduler>=3.10

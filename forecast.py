@@ -115,6 +115,11 @@ class Forecaster:
                  q95_power=unpickle("forecast_q95_power.pkl") if xgb_power is not None else None)
         if os.path.exists(path("forecast_xgb_sim.json")):
             fc.xgb_sim = booster("forecast_xgb_sim.json")
+            sim_meta = meta.get("simulated_meter", {})
+            if sim_meta.get("model") == "lightgbm" and os.path.exists(path("forecast_lgb_sim.txt")):
+                lgb_model = _lightgbm(path("forecast_lgb_sim.txt"))
+                if lgb_model is not None:
+                    fc.xgb_sim = lgb_model                  # same predict(X) interface
             fc.q05_sim, fc.q95_sim = unpickle("forecast_q05_sim.pkl"), unpickle("forecast_q95_sim.pkl")
         if not use_lstm:
             fc._lstm_tried = True
@@ -229,6 +234,25 @@ class Forecaster:
         out["day"] = out["datetime"].dt.date
         out["hour"] = out["datetime"].dt.hour
         return out
+
+
+class _LightGBMModel:
+    """A saved LightGBM booster with the same predict(X) as the XGBoost models."""
+
+    def __init__(self, booster):
+        self.booster = booster
+
+    def predict(self, X):
+        return self.booster.predict(X)
+
+
+def _lightgbm(file_path: str):
+    try:
+        import lightgbm
+        return _LightGBMModel(lightgbm.Booster(model_file=file_path))
+    except Exception as exc:                            # fall back to the XGBoost model
+        print(f"[forecast] {os.path.basename(file_path)} not loaded, using XGBoost: {exc}")
+        return None
 
 
 # ---------------------------------------------------------------- simulated meter

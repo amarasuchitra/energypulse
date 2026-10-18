@@ -1,0 +1,157 @@
+{
+ "created": "2026-10-18T16:34:46",
+ "results": [
+  {
+   "part": "uci",
+   "model": "XGBoost, current features",
+   "val_mae": 0.2985,
+   "test_mae_kw": 0.2917,
+   "test_rmse_kw": 0.4514,
+   "test_r2": 0.6317
+  },
+  {
+   "part": "uci",
+   "model": "LightGBM, current features",
+   "val_mae": 0.2974,
+   "params": {
+    "num_leaves": 127,
+    "learning_rate": 0.02,
+    "min_child_samples": 80,
+    "subsample": 0.7,
+    "subsample_freq": 1,
+    "colsample_bytree": 0.5,
+    "reg_lambda": 10.0
+   },
+   "test_mae_kw": 0.2922,
+   "test_rmse_kw": 0.4499,
+   "test_r2": 0.6341
+  },
+  {
+   "part": "uci",
+   "model": "Blend 0.40 XGBoost + 0.60 LightGBM, current features",
+   "weight_xgb": 0.4,
+   "val_mae": 0.297,
+   "test_mae_kw": 0.2911,
+   "test_rmse_kw": 0.4495,
+   "test_r2": 0.6347
+  },
+  {
+   "part": "uci",
+   "model": "XGBoost, + holidays and time of year",
+   "val_mae": 0.2996,
+   "test_mae_kw": 0.2911,
+   "test_rmse_kw": 0.4496,
+   "test_r2": 0.6346
+  },
+  {
+   "part": "uci",
+   "model": "LightGBM, + holidays and time of year",
+   "val_mae": 0.2971,
+   "params": {
+    "num_leaves": 63,
+    "learning_rate": 0.02,
+    "min_child_samples": 40,
+    "subsample": 0.7,
+    "subsample_freq": 1,
+    "colsample_bytree": 0.6,
+    "reg_lambda": 5.0
+   },
+   "test_mae_kw": 0.2919,
+   "test_rmse_kw": 0.4493,
+   "test_r2": 0.6351
+  },
+  {
+   "part": "uci",
+   "model": "Blend 0.10 XGBoost + 0.90 LightGBM, + holidays and time of year",
+   "weight_xgb": 0.1,
+   "val_mae": 0.2971,
+   "test_mae_kw": 0.2916,
+   "test_rmse_kw": 0.449,
+   "test_r2": 0.6356
+  },
+  {
+   "part": "sim",
+   "model": "XGBoost, meter only (current)",
+   "val_mae": 0.0977,
+   "test_mae_kw": 0.11,
+   "test_rmse_kw": 0.2104,
+   "test_r2": 0.743
+  },
+  {
+   "part": "sim",
+   "model": "LightGBM, meter only (current)",
+   "val_mae": 0.0962,
+   "params": {
+    "num_leaves": 63,
+    "learning_rate": 0.02,
+    "min_child_samples": 40,
+    "subsample": 0.7,
+    "subsample_freq": 1,
+    "colsample_bytree": 0.6,
+    "reg_lambda": 5.0
+   },
+   "test_mae_kw": 0.1081,
+   "test_rmse_kw": 0.2083,
+   "test_r2": 0.7484
+  },
+  {
+   "part": "sim",
+   "model": "Blend 0.15 XGBoost + 0.85 LightGBM, meter only (current)",
+   "weight_xgb": 0.15,
+   "val_mae": 0.0962,
+   "test_mae_kw": 0.1081,
+   "test_rmse_kw": 0.2083,
+   "test_r2": 0.7484
+  },
+  {
+   "part": "sim",
+   "model": "XGBoost, + weather and home context",
+   "val_mae": 0.0969,
+   "test_mae_kw": 0.1088,
+   "test_rmse_kw": 0.2078,
+   "test_r2": 0.7495
+  },
+  {
+   "part": "sim",
+   "model": "LightGBM, + weather and home context",
+   "val_mae": 0.0954,
+   "params": {
+    "num_leaves": 127,
+    "learning_rate": 0.02,
+    "min_child_samples": 80,
+    "subsample": 0.7,
+    "subsample_freq": 1,
+    "colsample_bytree": 0.5,
+    "reg_lambda": 10.0
+   },
+   "test_mae_kw": 0.1077,
+   "test_rmse_kw": 0.2067,
+   "test_r2": 0.7522
+  },
+  {
+   "part": "sim",
+   "model": "Blend 0.15 XGBoost + 0.85 LightGBM, + weather and home context",
+   "weight_xgb": 0.15,
+   "val_mae": 0.0953,
+   "test_mae_kw": 0.1075,
+   "test_rmse_kw": 0.2065,
+   "test_r2": 0.7527
+  },
+  {
+   "part": "sim",
+   "model": "Baseline: persistence",
+   "val_mae": 0.1704,
+   "test_mae_kw": 0.1825,
+   "test_rmse_kw": 0.3301,
+   "test_r2": 0.3677
+  },
+  {
+   "part": "sim",
+   "model": "Baseline: same_hour_mean_7_days",
+   "val_mae": 0.1445,
+   "test_mae_kw": 0.1655,
+   "test_rmse_kw": 0.2747,
+   "test_r2": 0.5621
+  }
+ ]
+}
