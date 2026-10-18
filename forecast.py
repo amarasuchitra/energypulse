@@ -236,7 +236,29 @@ def _sim_ready(fc: "Forecaster") -> bool:
     return fc.xgb_sim is not None and bool(fc.sim_features)
 
 
-def meter_hour_forecasts(fc: "Forecaster", hourly: pd.DataFrame) -> pd.DataFrame:
+def _add_context(fc: "Forecaster", h: pd.DataFrame, X: pd.DataFrame, context: Optional[dict]) -> pd.DataFrame:
+    """
+    Fill the household and weather columns the simulated-meter model may use
+    (sim_dataset.CONTEXT_FEATURES): the day's forecast high for the city, the
+    number of people, home size and which appliances the home has.  All known
+    before the hour starts.  Without `context` they stay empty (the model copes,
+    less accurately).
+    """
+    from sim_dataset import CONTEXT_FEATURES, context_features
+    need = [c for c in fc.sim_features if c in CONTEXT_FEATURES]
+    if not need or not context:
+        return X
+    from weather import daily_high
+    days = pd.date_range(h.index.min().normalize() - pd.Timedelta(days=1),
+                         h.index.max().normalize() + pd.Timedelta(days=1), freq="D")
+    ctx = context_features(h.index, daily_high(days, context.get("city", "")), context.get("people", 4.0),
+                           context.get("area", 1000.0), context.get("owned", ()))
+    X = X.copy()
+    X[need] = ctx[need].to_numpy()
+    return X
+
+
+def meter_hour_forecasts(fc: "Forecaster", hourly: pd.DataFrame, context: Optional[dict] = None) -> pd.DataFrame:
     """
     One-step forecasts for every hour of a simulated-meter series.
 
@@ -249,7 +271,7 @@ def meter_hour_forecasts(fc: "Forecaster", hourly: pd.DataFrame) -> pd.DataFrame
     if not _sim_ready(fc) or hourly is None or hourly.empty:
         return pd.DataFrame(columns=["target_hour", "predicted_kw", "lower_kw", "upper_kw"])
     h = to_hourly(hourly)
-    X = hourly_features(h).reindex(columns=fc.sim_features)
+    X = _add_context(fc, h, hourly_features(h).reindex(columns=fc.sim_features), context)
     ok = h[TARGET].notna().to_numpy()
     X = X[ok]
     if X.empty:
@@ -266,7 +288,8 @@ def meter_hour_forecasts(fc: "Forecaster", hourly: pd.DataFrame) -> pd.DataFrame
     return out.reset_index(drop=True)
 
 
-def meter_upcoming(fc: "Forecaster", hourly: pd.DataFrame, steps: int = 2) -> pd.DataFrame:
+def meter_upcoming(fc: "Forecaster", hourly: pd.DataFrame, steps: int = 2,
+                   context: Optional[dict] = None) -> pd.DataFrame:
     """
     Forecasts for the hours after the last completed hour (the one in progress,
     then the next), each step feeding the previous forecast in as if observed.
@@ -276,7 +299,7 @@ def meter_upcoming(fc: "Forecaster", hourly: pd.DataFrame, steps: int = 2) -> pd
         return pd.DataFrame(rows, columns=["target_hour", "predicted_kw", "lower_kw", "upper_kw"])
     h = to_hourly(hourly).iloc[-24 * 10:].copy()
     for _ in range(steps):
-        one = meter_hour_forecasts(fc, h.reset_index())
+        one = meter_hour_forecasts(fc, h.reset_index(), context)
         if one.empty:
             break
         last = one.iloc[-1]

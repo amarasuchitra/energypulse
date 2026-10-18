@@ -61,7 +61,8 @@ def test_plan_figures_are_consistent():
     prefs = HouseholdPrefs(min_monthly_saving_rs=0, max_suggestions=10)
     result = recommend(pred, sessions, Tariff(), prefs)
     v = validate_plan(pred, sessions, result["suggestions"], Tariff(), prefs)
-    assert v["shift"]["energy_saving_kwh_month"] == 0.0              # moving a run does not change its units
+    # moving a run does not change its units; only an early geyser's heat loss (estimate) adds a little
+    assert -1.0 <= v["shift"]["energy_saving_kwh_month"] <= 0.0
     assert v["cost_saving_month"] == pytest.approx(v["baseline"]["cost_month"] - v["optimised"]["cost_month"], abs=0.02)
     if v["baseline"]["cost_month"] > 0:
         assert v["cost_saving_pct"] == pytest.approx(v["cost_saving_month"] / v["baseline"]["cost_month"] * 100, abs=0.02)
@@ -108,3 +109,46 @@ def test_flat_tariff_still_gives_no_timing_tips():
     result = recommend(pred, extract_sessions(pred), Tariff(tod_enabled=False),
                        HouseholdPrefs(min_monthly_saving_rs=0))
     assert not [s for s in result["suggestions"] if s["kind"] == "shift"]
+
+
+def _plan(days=28, seed=7, **prefs):
+    pred = _detected(days=days, seed=seed)
+    sessions = extract_sessions(pred)
+    p = HouseholdPrefs(min_monthly_saving_rs=0, max_suggestions=10, **prefs)
+    return pred, sessions, recommend(pred, sessions, Tariff(), p), p
+
+
+def test_water_is_never_heated_or_pumped_after_it_is_needed():
+    for seed in (4, 7, 11):
+        _, _, result, _ = _plan(seed=seed)
+        for s in result["suggestions"]:
+            for mv in s.get("moves", []):
+                app = mv.get("appliance", s["appliance"])
+                if app in ("geyser", "water_pump"):
+                    assert mv["to"] <= mv["from"], (app, mv)
+                if app == "geyser":
+                    assert mv["from"] - mv["to"] <= 120
+
+
+def test_one_routine_time_per_habit_and_heat_loss_charged():
+    for seed in (4, 7, 11):
+        pred, sessions, result, p = _plan(seed=seed)
+        for s in result["suggestions"]:
+            if s["kind"] != "shift" or s["id"].startswith("shift:routine:"):
+                continue
+            targets = {mv["to"] for mv in s["moves"]}
+            assert len(targets) <= len(s["routines"])          # a fixed time per habit, easy to remember
+            for mv in s["moves"]:
+                if s["appliance"] == "geyser" and mv["to"] < mv["from"]:
+                    assert mv["loss_kwh"] > 0
+        check = validate_plan(pred, sessions, result["suggestions"], Tariff(), p)
+        assert check["all_constraints_ok"]
+
+
+def test_advice_reads_like_a_person_and_shows_the_year():
+    for seed in (4, 7, 11):
+        _, _, result, _ = _plan(seed=seed)
+        for s in result["suggestions"]:
+            if s["kind"] == "shift" and not s["id"].startswith("shift:routine:"):
+                assert " instead of about " in s["title"] and "a year" in s["detail"]
+                assert "Rs." in s["calculation"]

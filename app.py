@@ -1708,7 +1708,8 @@ def _meter_forecast_cached(date, scenario, owned, hour):
     pred = detected_history(date, scenario, owned)
     cutoff = pd.Timestamp(date) + pd.Timedelta(hours=int(hour))
     hourly = minute_to_hourly(pred[pd.to_datetime(pred["datetime"]) < cutoff]).dropna()
-    upcoming = meter_upcoming(load_forecaster(), hourly, steps=2)
+    from meter_source import meter_context
+    upcoming = meter_upcoming(load_forecaster(), hourly, steps=2, context=meter_context(scenario, owned))
     log.info("Meter forecast for %s %02d:00 from %d finished hours: %s", date, int(hour), len(hourly),
              [round(float(v), 3) for v in upcoming.get("predicted_kw", [])])
     return upcoming
@@ -1726,9 +1727,11 @@ def run_meter_monitoring(household_id, owned, people, scenario, date):
         return st.session_state.get("_monitor_result")
     try:
         import monitoring
+        from meter_source import meter_context
         res = monitoring.run_check(get_db(), load_forecaster(), household_id, detected_history(date, scenario, owned),
                                    _meter_now_ts(date), owned, people=people, service=get_notification_service(),
-                                   language=st.session_state.get("lang", "en"))
+                                   language=st.session_state.get("lang", "en"),
+                                   context=meter_context(scenario, owned))
         log.info("Monitoring %s: logged %d forecasts, filled %d hours, status %s%s", household_id, res["logged"],
                  res["filled"], res["result"]["status"], ", ALERT" if res["alert"] else "")
     except Exception:

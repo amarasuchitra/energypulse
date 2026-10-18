@@ -148,6 +148,13 @@ def scenario_place(scenario: str):
     return fields.get("city", ""), size
 
 
+def meter_context(scenario: str, owned) -> dict:
+    """What the live forecast may use besides the meter: city (for the weather), people, size, appliances."""
+    _, _, people = split_scenario(scenario)
+    city, area = scenario_place(scenario)
+    return {"city": city, "people": float(people), "area": float(area), "owned": tuple(owned or ())}
+
+
 def temperatures(date: str, scenario: str, days: int = HISTORY_DAYS) -> pd.Series:
     """Simulated daily high for each day of the history that ends on `date` (see weather.py)."""
     from weather import daily_high

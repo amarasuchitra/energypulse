@@ -65,11 +65,27 @@ def feasible_starts(profile: ApplianceProfile, duration: int, current_start: int
         if profile.noisy and any(_in_quiet(m, prefs.quiet_hours)
                                  for m in (s, s + duration - 1)):
             continue
-        if profile.max_advance_min is not None:
-            if not (current_start - profile.max_advance_min <= s <= current_start):
-                continue
+        if not within_shift_limits(profile, current_start, s):
+            continue
         starts.append(s)
     return starts
+
+
+def within_shift_limits(profile: ApplianceProfile, current_start: int, new_start: int) -> bool:
+    """Earlier by at most max_advance_min, later by at most max_delay_min (None = no limit)."""
+    if profile.max_advance_min is not None and new_start < current_start - profile.max_advance_min:
+        return False
+    if profile.max_delay_min is not None and new_start > current_start + profile.max_delay_min:
+        return False
+    return True
+
+
+def _run_fits(profile: ApplianceProfile, start: int, dur: int, prefs: HouseholdPrefs) -> bool:
+    """The whole run stays in the appliance's allowed hours and out of quiet hours if noisy."""
+    lo, hi = profile.allowed_hours[0] * 60, profile.allowed_hours[1] * 60
+    if not (lo <= start and start + dur <= hi):
+        return False
+    return not (profile.noisy and any(_in_quiet(m, prefs.quiet_hours) for m in (start, start + dur - 1)))
 
 
 SLOT_MIN = 15
@@ -107,80 +123,198 @@ def day_loads(pred: pd.DataFrame) -> Dict[pd.Timestamp, np.ndarray]:
     return {pd.Timestamp(d): np.array(row, dtype=float) for d, row in table.iterrows()}
 
 
+# How a person would put it, per appliance.  Used by the advice text only.
+HUMAN = {
+    "geyser": dict(
+        verb="Switch the geyser on", thing="geyser",
+        why=("An insulated tank keeps water hot for a couple of hours, so it will still be ready "
+             "when you need it. The little heat it loses while waiting is already taken off the saving."),
+        tip="If your geyser has a timer, set it once and you won't have to remember."),
+    "water_pump": dict(
+        verb="Run the water pump", thing="water pump",
+        why=("Filling the tank earlier is safe: the water simply waits in the tank. Filling it later "
+             "could leave you short, so that is never suggested."),
+        tip="Doing it at the same time every day turns it into an easy habit."),
+    "washing_machine": dict(
+        verb="Start the washing machine", thing="washing machine",
+        why=("It's the same day and still in waking hours, so the laundry gets done and the noise "
+             "won't disturb anyone."),
+        tip="If your machine has a delay-start button, load it as usual and let it start itself."),
+}
+
+ROUTINE_GAP_MIN = 180          # runs further apart than this in the day are different habits
+NEAR_BEST = 0.90               # take the smallest change that keeps 90% of the best saving
+MIN_MOVE_MIN = 15              # a change of a few minutes is not a change worth asking for
+MIN_RS_PER_RUN = 0.25          # nor is one that saves less than this each time
+
+
+def _part_of_day(minute: int) -> str:
+    h = (int(minute) % 1440) // 60
+    return "mornings" if 4 <= h < 12 else "afternoons" if h < 17 else "evenings" if h < 22 else "nights"
+
+
+def _routines(runs: List[dict]) -> List[List[dict]]:
+    """Split runs into daily habits (e.g. a morning and an evening geyser) by time of day."""
+    runs = sorted(runs, key=lambda r: r["start"])
+    groups, current = [], [runs[0]]
+    for r in runs[1:]:
+        if r["start"] - current[-1]["start"] > ROUTINE_GAP_MIN:
+            groups.append(current)
+            current = []
+        current.append(r)
+    groups.append(current)
+    return groups
+
+
+def _run_gain(profile, run, to, tariff, prefs, base, cap_kw):
+    """(saving in Rs., extra kWh) of moving one run to `to`, or None when that is not allowed."""
+    start, dur, kw = run["start"], run["dur"], run["kw"]
+    if to == start or not within_shift_limits(profile, start, to) or not _run_fits(profile, to, dur, prefs):
+        return None
+    if base is not None and cap_kw and float(base[_slots(to, dur)].max()) + kw > cap_kw:
+        return None
+    hours_early = max(0, start - to) / 60.0
+    loss_kwh = profile.standby_loss_kwh_per_h * hours_early
+    new_cost = tariff.run_cost(to, dur, kw) + loss_kwh * tariff.rate_at(to / 60.0)
+    return tariff.run_cost(start, dur, kw) - new_cost, loss_kwh
+
+
+def _base_without(load, run):
+    """That day's load with this run taken out (None when the day is unknown)."""
+    if load is None or run["day"] not in load:
+        return None
+    base = load[run["day"]].copy()
+    old = _slots(run["start"], run["dur"])
+    base[old] = np.maximum(base[old] - run["kw"], 0.0)
+    return base
+
+
 def _shift_suggestion(key: str, group: pd.DataFrame, profile: ApplianceProfile,
                       tariff: Tariff, prefs: HouseholdPrefs, days: float,
                       load: Optional[Dict[pd.Timestamp, np.ndarray]] = None,
                       cap_kw: Optional[float] = None) -> Optional[dict]:
     """
-    Best alternative time for the runs that currently fall in costly hours.
+    A new routine time for a shiftable appliance, chosen the way a sensible
+    person would:
 
-    With `load` (each day's measured load per 15-minute slot, updated as runs
-    are moved) and `cap_kw`, a time is only offered if that day's load stays
-    under the cap with this run moved there.  Accepted moves update `load`, so
-    later runs and appliances are planned on top of them.  Among the cheapest
-    times, the one with the lowest resulting peak, then the one closest to the
-    current habit, is chosen.
+    - one fixed time per daily habit (runs are grouped by time of day), so it
+      is easy to remember, rather than a different time every day;
+    - the smallest change that keeps most (90%) of the best possible saving;
+    - only directions that make sense (a geyser or a water tank is never
+      filled after it is needed) and within each appliance's limits, quiet
+      hours and allowed hours;
+    - heat lost by a geyser that heats early is charged against the saving;
+    - with `load` and `cap_kw`, a day is only moved if the home stays under the
+      cap; accepted moves are added to `load` so later appliances plan on top.
     """
-    moves = []
-    for _, s in group.iterrows():
-        start = s["start"].hour * 60 + s["start"].minute
-        dur = int(s["span_min"])
-        avg_kw = s["kwh"] / (dur / 60.0)
-        now_cost = tariff.run_cost(start, dur, avg_kw)
-        options = feasible_starts(profile, dur, start, prefs)
-        day = pd.Timestamp(s["start"]).normalize()
-        base = None
-        if load is not None and day in load:
-            base = load[day].copy()
-            old = _slots(start, dur)
-            base[old] = np.maximum(base[old] - avg_kw, 0.0)          # the run leaves its old time
-            if cap_kw:
-                options = [o for o in options if float(base[_slots(o, dur)].max()) + avg_kw <= cap_kw]
-        if not options:
+    runs = []
+    for _, r in group.iterrows():
+        dur = max(int(r["span_min"]), 1)
+        runs.append({"start": r["start"].hour * 60 + r["start"].minute, "dur": dur,
+                     "kwh": float(r["kwh"]), "kw": float(r["kwh"]) / (dur / 60.0),
+                     "day": pd.Timestamp(r["start"]).normalize()})
+    if not runs:
+        return None
+    moves, habits = [], []
+    for habit in _routines(runs):
+        typical = int(np.median([r["start"] for r in habit]))
+        dur = int(np.median([r["dur"] for r in habit]))
+        candidates = [t for t in feasible_starts(profile, dur, typical, prefs) if abs(t - typical) >= MIN_MOVE_MIN]
+        if not candidates:
             continue
-        costs = [tariff.run_cost(o, dur, avg_kw) for o in options]
-        cheapest = min(costs)
-        near = [o for o, c in zip(options, costs) if c <= cheapest + 1e-9]
-        if base is not None:
-            best = min(near, key=lambda o: (round(float(base[_slots(o, dur)].max()) + avg_kw, 3), abs(o - start)))
-        else:
-            best = min(near, key=lambda o: abs(o - start))
-        if now_cost - cheapest > 0.01:
+        bases = [_base_without(load, r) for r in habit]
+        totals = {}
+        for to in candidates:
+            gains = [_run_gain(profile, r, to, tariff, prefs, bs, cap_kw) for r, bs in zip(habit, bases)]
+            totals[to] = sum(g[0] for g in gains if g and g[0] > 0.01)
+        best = max(totals.values())
+        if best <= 0.01:
+            continue
+        good = [t for t, v in totals.items() if v >= NEAR_BEST * best]
+        chosen = min(good, key=lambda t: (abs(t - typical), -totals[t]))
+        habit_moves = []
+        for r in habit:                                   # commit, day by day, on the updated load
+            base = _base_without(load, r)
+            g = _run_gain(profile, r, chosen, tariff, prefs, base, cap_kw)
+            if not g or g[0] <= 0.01:
+                continue
+            saving, loss = g
             if base is not None:
-                base[_slots(best, dur)] += avg_kw
-                load[day] = base
-            moves.append({"from": start, "to": best, "saving": now_cost - cheapest,
-                          "dur": dur, "kwh": s["kwh"], "now": now_cost, "new": cheapest, "kw": avg_kw,
-                          "day": pd.Timestamp(s["start"]).normalize()})
+                base[_slots(chosen, r["dur"])] += r["kw"]
+                load[r["day"]] = base
+            habit_moves.append({"day": r["day"], "from": r["start"], "to": chosen, "dur": r["dur"],
+                                "kw": r["kw"], "kwh": r["kwh"], "loss_kwh": loss, "saving": saving,
+                                "now": tariff.run_cost(r["start"], r["dur"], r["kw"])})
+        habit_saving = sum(m["saving"] for m in habit_moves)
+        if habit_moves and habit_saving / len(habit_moves) < MIN_RS_PER_RUN:
+            for m in habit_moves:                         # not worth asking for: put the load back
+                if load is not None and m["day"] in load:
+                    day_load = load[m["day"]].copy()
+                    day_load[_slots(m["to"], m["dur"])] -= m["kw"]
+                    day_load[_slots(m["from"], m["dur"])] += m["kw"]
+                    load[m["day"]] = np.maximum(day_load, 0.0)
+            habit_moves = []
+        if habit_moves:
+            moves.extend(habit_moves)
+            habits.append({"typical": typical, "to": chosen, "dur": dur, "runs": len(habit),
+                           "moved": len(habit_moves), "saving": sum(m["saving"] for m in habit_moves),
+                           "best": best, "best_to": max(totals, key=totals.get)})
     if not moves:
         return None
-    m = pd.DataFrame(moves)
-    runs_per_month = len(m) / days * DAYS_PER_MONTH
-    saving_per_run = float(m["saving"].mean())
-    monthly = saving_per_run * runs_per_month
-    typical_from = int(m["from"].median())
-    typical_to = int(m["to"].median() // 15 * 15)
-    dur = int(m["dur"].median())
+    habits.sort(key=lambda h: -h["saving"])
+    monthly = sum(h["saving"] for h in habits) / days * DAYS_PER_MONTH
+    title, detail, calculation = _shift_words(key, profile, habits, moves, tariff, days, monthly, len(runs))
     return {
         "id": f"shift:{key}",
         "appliance": key,
         "kind": "shift",
-        "title": f"Run the {profile.name.lower()} around {_hhmm(typical_to)} "
-                 f"instead of {_hhmm(typical_from)}",
-        "detail": (f"{len(m)} of your {len(group)} runs in the last {days:.0f} days were in "
-                   f"{tariff.label_at(typical_from / 60).lower()} "
-                   f"(Rs. {tariff.rate_at(typical_from / 60):.2f}/unit). "
-                   f"{_hhmm(typical_to)} is {tariff.label_at(typical_to / 60).lower()} "
-                   f"(Rs. {tariff.rate_at(typical_to / 60):.2f}/unit) and inside your allowed hours."),
+        "title": title,
+        "detail": detail,
         "monthly_saving_rs": round(monthly, 0),
         "monthly_saving_exact": monthly,
-        "calculation": (f"Average run {dur} min, {m['kwh'].mean():.2f} kWh: "
-                        f"Rs. {m['now'].mean():.2f} now vs Rs. {m['new'].mean():.2f} moved "
-                        f"= Rs. {saving_per_run:.2f} per run x {runs_per_month:.0f} runs/month"),
-        "_reserve": (typical_to, dur, float(m["kw"].quantile(0.9))),
-        "moves": m[["day", "from", "to", "dur", "kw", "kwh"]].to_dict("records"),
+        "calculation": calculation,
+        "routines": [{"from": _hhmm(h["typical"]), "to": _hhmm(h["to"]), "runs_moved": h["moved"],
+                      "monthly_saving_rs": round(h["saving"] / days * DAYS_PER_MONTH, 1)} for h in habits],
+        "moves": [{k: m[k] for k in ("day", "from", "to", "dur", "kw", "kwh", "loss_kwh")} for m in moves],
         "history_days": days,
     }
+
+
+def _shift_words(key, profile, habits, moves, tariff, days, monthly, n_runs):
+    """Title, explanation and arithmetic, written the way an energy advisor would say it."""
+    words = HUMAN.get(key, dict(verb=f"Run the {profile.name.lower()}", thing=profile.name.lower(),
+                                why="It stays within the hours you allow.", tip=""))
+    h = habits[0]
+    frm, to = h["typical"], h["to"]
+    title = f"{words['verb']} at {_hhmm(to)} instead of about {_hhmm(frm)}"
+    rate_now, rate_new = tariff.rate_at(frm / 60.0), tariff.rate_at(to / 60.0)
+    parts = [f"Most {_part_of_day(frm)} your {words['thing']} starts around {_hhmm(frm)}, "
+             f"in {tariff.label_at(frm / 60.0).lower()} hours when a unit costs Rs. {rate_now:.2f}. "
+             f"At {_hhmm(to)} it costs Rs. {rate_new:.2f} ({tariff.label_at(to / 60.0).lower()})."]
+    parts.append(words["why"])
+    for other in habits[1:]:
+        parts.append(f"The same works for your {_part_of_day(other['typical'])[:-1]} run: "
+                     f"{_hhmm(other['to'])} instead of about {_hhmm(other['typical'])}.")
+    extra = (h["best"] - h["saving"]) / days * DAYS_PER_MONTH
+    if h["best_to"] != to and extra >= 1.0:
+        parts.append(f"This is the smallest change that gets most of the saving; moving it all the way to "
+                     f"{_hhmm(h['best_to'])} would add only about Rs. {extra:.0f} a month.")
+    moved = len(moves)
+    if moved < n_runs:
+        parts.append(f"It applies to {moved} of your {n_runs} runs in the last {days:.0f} days; the rest are "
+                     f"already at a good time, or moving them would take the home too close to its load limit.")
+    parts.append(f"That's about Rs. {monthly:.0f} a month, or Rs. {monthly * 12:.0f} a year.")
+    if words.get("tip"):
+        parts.append(words["tip"])
+    m = pd.DataFrame(moves)
+    per_month = len(m) / days * DAYS_PER_MONTH
+    loss_rs = float((m["loss_kwh"] * tariff.rate).mean()) if "loss_kwh" in m else 0.0
+    calc = (f"Average run {int(m['dur'].median())} min, {m['kwh'].mean():.2f} kWh: "
+            f"Rs. {m['now'].mean():.2f} now vs Rs. {(m['now'] - m['saving']).mean() - loss_rs:.2f} moved")
+    if loss_rs > 0.005:
+        calc += f", plus Rs. {loss_rs:.2f} for heat lost while waiting (estimate)"
+    calc += f" = Rs. {m['saving'].mean():.2f} per run x {per_month:.0f} runs/month"
+    return title, " ".join(parts), calc
 
 
 def _combined_routine(small: List[dict], profiles) -> Optional[dict]:
@@ -189,13 +323,15 @@ def _combined_routine(small: List[dict], profiles) -> Optional[dict]:
     total = sum(s["monthly_saving_exact"] for s in small)
     names = [profiles[s["appliance"]].name.lower() for s in small]
     listed = ", ".join(names[:-1]) + " and " + names[-1]
+    count = {2: "Two", 3: "Three", 4: "Four"}.get(len(small), str(len(small)))
     return {
         "id": "shift:routine:" + "+".join(sorted(s["appliance"] for s in small)),
         "appliance": small[0]["appliance"],
         "kind": "shift",
-        "title": f"Move the {listed} to cheaper hours",
-        "detail": " ".join(s["title"] + f" (about Rs. {s['monthly_saving_exact']:.0f}/month)." for s in small)
-                  + " Each change is small; together they are worth doing.",
+        "title": f"{count} small timing changes for the {listed}",
+        "detail": ("None of these is worth much on its own, but together they add up to about "
+                   f"Rs. {total:.0f} a month (Rs. {total * 12:.0f} a year). "
+                   + " ".join(f"{s['title']} (about Rs. {s['monthly_saving_exact']:.0f}/month)." for s in small)),
         "monthly_saving_rs": round(total, 0),
         "monthly_saving_exact": total,
         "calculation": " + ".join(f"Rs. {s['monthly_saving_exact']:.1f}" for s in small)
@@ -217,10 +353,12 @@ def _ac_suggestions(group: pd.DataFrame, profile: ApplianceProfile,
             "id": "duration:ac:setpoint",
             "appliance": "ac",
             "kind": "duration",
-            "title": "If your AC is set below 24°C, raise it by 2°C",
-            "detail": (f"Your AC runs about {hours_per_day:.1f} h a day and costs about "
-                       f"Rs. {monthly_cost:.0f} a month. A higher set temperature makes the "
-                       f"compressor rest more often. Skip this if it is already at 24°C or above."),
+            "title": "If your AC is set below 24°C, nudge it up by 2°C",
+            "detail": (f"Your AC runs about {hours_per_day:.1f} hours a day, which costs roughly "
+                       f"Rs. {monthly_cost:.0f} a month. Each degree warmer cuts its electricity by about 6%, "
+                       f"so 2°C saves around Rs. {saving:.0f} a month. Most people stop noticing the "
+                       f"difference within a few minutes, especially with a ceiling fan on. "
+                       f"If it's already at 24°C or higher, you can skip this one."),
             "monthly_saving_rs": round(saving, 0),
             "calculation": (f"About 6% less AC energy per degree (BEE guidance) x 2 degrees "
                             f"= 12% of Rs. {monthly_cost:.0f}. An estimate, not a measurement."),
@@ -236,10 +374,12 @@ def _ac_suggestions(group: pd.DataFrame, profile: ApplianceProfile,
             "id": "duration:ac:timer",
             "appliance": "ac",
             "kind": "duration",
-            "title": "Set the AC sleep timer to switch off 1 hour earlier",
+            "title": "Let the AC switch itself off an hour earlier at night",
             "detail": (f"On {len(long_nights)} of the last {days:.0f} nights the AC ran for 6 hours "
-                       f"or more, until about {_hhmm(int(end_hour * 60))}. Rooms stay cool for a "
-                       f"while after the compressor stops, and early morning is the coolest part of the night."),
+                       f"or more, until about {_hhmm(int(end_hour * 60))}. Early morning is the coolest "
+                       f"part of the night and a closed room stays cool for a while after the compressor "
+                       f"stops, so a sleep timer set an hour earlier is unlikely to wake you. "
+                       f"That's about Rs. {saving:.0f} a month."),
             "monthly_saving_rs": round(saving, 0),
             "calculation": (f"{kw_last_hour:.2f} kW average x 1 h x Rs. "
                             f"{tariff.rate_at(end_hour - 1):.2f} x {nights_per_month:.0f} nights/month"),
@@ -261,11 +401,12 @@ def _fridge_health(pred: pd.DataFrame, profile: ApplianceProfile,
         "id": f"health:{profile.key}",
         "appliance": profile.key,
         "kind": "health",
-        "title": f"Have the {profile.name.lower()} checked - its compressor is running too much",
-        "detail": (f"The compressor is running {observed * 100:.0f}% of the time; about "
-                   f"{profile.normal_duty * 100:.0f}% is normal. Common causes: a worn door seal, "
-                   f"the thermostat set too cold, dusty coils, or no gap behind the unit. "
-                   f"Do not switch it off to save power."),
+        "title": f"Your {profile.name.lower()} is working harder than it should",
+        "detail": (f"Its compressor is running {observed * 100:.0f}% of the time, where about "
+                   f"{profile.normal_duty * 100:.0f}% is normal. The usual culprits are easy to check: "
+                   f"a door seal that no longer grips (try closing the door on a sheet of paper), the "
+                   f"thermostat set colder than needed, dusty coils at the back, or no gap behind the unit. "
+                   f"Please don't switch it off to save power; fixing the cause is what saves money."),
         "monthly_saving_rs": round(excess * tariff.rate, 0),
         "calculation": (f"{kwh_month:.1f} kWh/month now; at normal running it would be "
                         f"{kwh_month - excess:.1f} kWh. Difference {excess:.1f} kWh x Rs. {tariff.rate:.2f}"),
@@ -410,7 +551,7 @@ def validate_plan(pred: pd.DataFrame, sessions: pd.DataFrame, suggestions: List[
     after = load.copy()
     moves = [dict(mv, appliance=mv.get("appliance", s["appliance"]))
              for s in suggestions if s.get("kind") == "shift" for mv in s.get("moves", [])]
-    checks, shift_cost_saving = [], 0.0
+    checks, shift_cost_saving, shift_loss_kwh = [], 0.0, 0.0
     cap = (prefs.sanctioned_kw * prefs.load_margin) if prefs.sanctioned_kw else None
     for mv in moves:
         profile = profiles.get(mv["appliance"])
@@ -421,8 +562,10 @@ def validate_plan(pred: pd.DataFrame, sessions: pd.DataFrame, suggestions: List[
             problems.append("outside allowed hours")
         if profile.noisy and any(_in_quiet(m, prefs.quiet_hours) for m in (to, to + dur - 1)):
             problems.append("in quiet hours")
-        if profile.max_advance_min is not None and not (start - profile.max_advance_min <= to <= start):
-            problems.append("too early for the water to stay hot")
+        if profile.max_advance_min is not None and to < start - profile.max_advance_min:
+            problems.append("moved earlier than this appliance allows")
+        if profile.max_delay_min is not None and to > start + profile.max_delay_min:
+            problems.append("moved later than this appliance allows")
         if profile.category != SHIFTABLE:
             problems.append("not a shiftable appliance")
         day = mv["day"]
@@ -431,7 +574,10 @@ def validate_plan(pred: pd.DataFrame, sessions: pd.DataFrame, suggestions: List[
                 after.loc[day, sl] = max(0.0, after.loc[day, sl] - kw)
             for sl in _slots(to, dur):
                 after.loc[day, sl] = after.loc[day, sl] + kw
-        shift_cost_saving += tariff.run_cost(start, dur, kw) - tariff.run_cost(to, dur, kw)
+        loss = float(mv.get("loss_kwh", 0.0) or 0.0)            # heat lost waiting (geyser)
+        shift_loss_kwh += loss
+        shift_cost_saving += (tariff.run_cost(start, dur, kw) - tariff.run_cost(to, dur, kw)
+                              - loss * tariff.rate_at(to / 60.0))
         checks.append({"appliance": profile.name, "from": _hhmm(start), "to": _hhmm(to), "minutes": dur,
                        "ok": not problems, "problems": problems})
     peak_before = float(load.max(axis=1).mean()) if not load.empty else 0.0
@@ -455,13 +601,15 @@ def validate_plan(pred: pd.DataFrame, sessions: pd.DataFrame, suggestions: List[
     est_saving_m = round(sum(float(s.get("monthly_saving_rs", 0)) for s in suggestions
                              if s.get("kind") != "shift"), 2)
     base_month_kwh, base_month_cost = month(base_kwh), month(base_cost)
-    opt_month_kwh = round(base_month_kwh - month(est_kwh), 2)
+    opt_month_kwh = round(base_month_kwh - month(est_kwh) + month(shift_loss_kwh), 2)
     opt_month_cost = round(base_month_cost - shift_saving_m - est_saving_m, 2)
     return {
         "history_days": round(days, 1),
         "baseline": {"kwh_month": base_month_kwh, "cost_month": base_month_cost, "avg_daily_peak_kw": round(peak_before, 2)},
         "optimised": {"kwh_month": opt_month_kwh, "cost_month": opt_month_cost, "avg_daily_peak_kw": round(peak_after, 2)},
-        "shift": {"energy_saving_kwh_month": 0.0, "cost_saving_month": shift_saving_m, "runs_moved": len(moves)},
+        "shift": {"energy_saving_kwh_month": -month(shift_loss_kwh), "cost_saving_month": shift_saving_m,
+                  "runs_moved": len(moves), "note": "moving a run does not change its units; an early "
+                  "geyser loses a little heat while it waits (estimate), counted here"},
         "estimated_tips": {"energy_saving_kwh_month": month(est_kwh), "cost_saving_month": est_saving_m,
                            "label": "estimate from BEE guidance, not simulated"},
         "energy_saving_kwh_month": round(base_month_kwh - opt_month_kwh, 2),

@@ -104,16 +104,42 @@ its accuracy says how well the model learns the simulator, not a real home.
 
 ## 6. Optimisation evaluation
 
+The scheduler plans the way a sensible person would (V4.6):
+
+- **One routine time per habit.** Runs are grouped by time of day (a morning and an evening geyser are
+  two habits), and each habit gets one fixed time to remember, not a different time every day.
+- **The smallest change that keeps most of the saving.** Among the times that keep at least 90% of the
+  best saving, the one closest to the current habit is chosen. Changes under 15 minutes or under
+  Rs. 0.25 a run are not suggested.
+- **Directions that make sense.** A geyser and a water pump only move *earlier* (hot water and a full
+  tank must be ready when needed); a geyser at most 2 hours earlier, with its standing heat loss
+  (about 0.025 kWh an hour, an estimate) charged against the saving. A washing machine moves at most
+  4 hours either way, inside waking hours and outside quiet hours.
+- **Advice written like an energy advisor:** what the habit is now, what it costs, the new time, why it is
+  safe, the saving per month and per year, and a practical tip (a geyser timer, delay start).
+
 `scheduler.validate_plan` re-checks every plan and is shown on **Optimize → Save** as "Plan check":
+baseline vs optimised energy, cost and average daily peak; every moved run against allowed hours, quiet
+hours, how far earlier or later it may move, its category, and the household load cap (85% of sanctioned
+load) on every day of history. Moving a run keeps its units the same, apart from an early geyser's small
+heat loss, which is counted. Energy savings come only from the efficiency tips and are labelled
+"estimate from BEE guidance, not simulated".
 
-- Baseline vs optimised energy (kWh/month), cost (Rs./month) and average daily peak (kW).
-- Moving a run keeps its energy the same; only cost and peak change. Energy savings come only from the
-  efficiency tips and are labelled "estimate from BEE guidance, not simulated".
-- Every moved run is checked against allowed hours, quiet hours, how far ahead it may start, its
-  category, and the household load cap (85% of sanctioned load) on every day of history.
+**Measured on 5 simulated homes, 28 days each, timing advice only:**
 
-On the three built-in scenarios: cost saving 4.3–4.8% from timing alone, average daily peak
-1.94 → 1.85 kW, **0 constraint violations** (previously up to 3.86 kW against a 2.55 kW cap).
+| | Previous planner | Human-like planner |
+|---|---|---|
+| Saving from timing | Rs. 26 a home a month (0.76% of the bill) | Rs. 8 a home a month (0.23%) |
+| Hot water or pumping moved to *after* it is needed | 137 of 243 moves | 0 |
+| Average move | 4.9 hours | 1.4 hours |
+| Largest move | 10.4 hours | 3.4 hours |
+| Different times to remember | 146 | 12 (about 2 a home) |
+| Constraint violations | 0 | 0 |
+
+The previous planner's larger figure came mostly from moves nobody would follow. Timing alone saves
+little on this tariff (evening peak +20%, solar hours −20%); the larger savings are the efficiency tips
+(the AC set-point and sleep-timer tips: an estimated Rs. 181–283 a month on three of these homes). An earlier version
+of this report quoted "4.3–4.8% from timing alone"; that figure could not be reproduced and is withdrawn.
 On a flat tariff no timing advice is given because moving use saves nothing.
 
 ## 7. Error handling

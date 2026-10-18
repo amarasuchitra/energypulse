@@ -347,6 +347,11 @@ def sample_month_forecast(h, d, model, feats, seasonal=True):
 
 
 # ----------------------------------------------------------------- simulated meter
+# Use the weather and household context (sim_dataset.CONTEXT_FEATURES) in the
+# simulated-meter model.  Decided by experiments.py on validation homes.
+SIM_CONTEXT = True
+
+
 def train_simulated_meter(xgb_params):
     """
     Next-hour model for the app's simulated meter.  Trained on simulated homes,
@@ -354,9 +359,9 @@ def train_simulated_meter(xgb_params):
     """
     import sim_dataset as sd
     t = time.time()
-    Xtr, ytr, _ = sd.build(sd.TRAIN_SEEDS)
-    Xva, yva, _ = sd.build(sd.VALIDATION_SEEDS)
-    Xte, yte, ids = sd.build(sd.TEST_SEEDS)
+    Xtr, ytr, _ = sd.build(sd.TRAIN_SEEDS, context=SIM_CONTEXT)
+    Xva, yva, _ = sd.build(sd.VALIDATION_SEEDS, context=SIM_CONTEXT)
+    Xte, yte, ids = sd.build(sd.TEST_SEEDS, context=SIM_CONTEXT)
     _log(f"  homes: {len(sd.TRAIN_SEEDS)} train, {len(sd.VALIDATION_SEEDS)} validation, "
          f"{len(sd.TEST_SEEDS)} test ({len(ytr):,} / {len(yva):,} / {len(yte):,} hours; built in {time.time() - t:.0f}s)")
     model, params = train_xgboost(Xtr, ytr, Xva, yva,
@@ -367,6 +372,7 @@ def train_simulated_meter(xgb_params):
     yt = yte.values
     out = {
         "features": list(Xtr.columns),
+        "context_features": [c for c in Xtr.columns if c in sd.CONTEXT_FEATURES],
         "interval_offset_kw": offset,
         "homes": {"train": len(sd.TRAIN_SEEDS), "validation": len(sd.VALIDATION_SEEDS), "test": len(sd.TEST_SEEDS)},
         "test_hours": int(len(yt)),

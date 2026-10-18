@@ -71,3 +71,26 @@ def test_missing_band_models_leave_band_empty():
     s = _series()
     out = meter_hour_forecasts(_forecaster(s, with_band=False), s)
     assert out["lower_kw"].isna().all() and not out["predicted_kw"].isna().any()
+
+
+def test_weather_and_household_context_reach_the_model():
+    from sim_dataset import CONTEXT_FEATURES
+    s = _series()
+    fc = _forecaster(s)
+    fc.sim_features = fc.sim_features + CONTEXT_FEATURES
+    seen = {}
+
+    class Spy(SumModel):
+        def predict(self, X):
+            seen["X"] = X
+            return super().predict(X)
+
+    fc.xgb_sim = Spy()
+    ctx = {"city": "bengaluru", "people": 3, "area": 900, "owned": ("fridge", "ac", "geyser")}
+    out = meter_hour_forecasts(fc, s, ctx)
+    X = seen["X"]
+    assert not X[CONTEXT_FEATURES].isna().any().any()
+    assert (X["people"] == 3).all() and (X["has_ac"] == 1).all() and (X["n_appliances"] == 3).all()
+    assert len(out) == len(s)
+    # without context the model still answers (columns left empty), never a made-up value
+    assert len(meter_hour_forecasts(fc, s)) == len(s)

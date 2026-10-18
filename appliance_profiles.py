@@ -68,6 +68,12 @@ class ApplianceProfile:
     # (a geyser can heat ahead of a bath because the tank holds heat, but
     # heating after the bath is useless).
     max_advance_min: Optional[int] = None
+    # If set, the run may move LATER by at most this many minutes (0 = never
+    # later: a water tank filled after it is needed leaves the home short).
+    max_delay_min: Optional[int] = None
+    # Heat a storage geyser loses per hour it waits after heating early (kWh/h).
+    # About 0.5-0.6 kWh a day for a 15 L tank; an estimate, used to keep savings honest.
+    standby_loss_kwh_per_h: float = 0.0
     # Always-on only: normal share of time the compressor runs.
     normal_duty: Optional[float] = None
     note: str = ""
@@ -90,21 +96,24 @@ DEFAULT_PROFILES: Dict[str, ApplianceProfile] = {
     "geyser": ApplianceProfile(
         key="geyser", name="Water Heater (Geyser)", icon="", category=SHIFTABLE,
         rated_kw=2.0, on_threshold_kw=1.0, typical_run_min=(10, 40),
-        max_run_min=60, allowed_hours=(4, 23), max_advance_min=180,
+        max_run_min=60, allowed_hours=(4, 23), max_advance_min=120, max_delay_min=0,
+        standby_loss_kwh_per_h=0.025,
         product="Storage water heater, 15 L",
-        note="Water stays hot for a few hours in an insulated tank, so heating can move earlier."),
+        note="Water stays hot for a couple of hours in an insulated tank, so heating can move earlier, never later."),
     "washing_machine": ApplianceProfile(
         key="washing_machine", name="Washing Machine", icon="", category=SHIFTABLE,
         rated_kw=0.5, on_threshold_kw=0.08, typical_run_min=(40, 80),
         max_run_min=150, merge_gap_min=6, allowed_hours=(7, 21), noisy=True,
+        max_advance_min=240, max_delay_min=240,
         product="Front-load washing machine, 7 kg",
         note="Noisy, so it is only scheduled in waking hours."),
     "water_pump": ApplianceProfile(
         key="water_pump", name="Water Pump", icon="", category=SHIFTABLE,
         rated_kw=0.75, on_threshold_kw=0.4, typical_run_min=(10, 30),
         max_run_min=45, allowed_hours=(6, 22), noisy=True,
+        max_advance_min=360, max_delay_min=0,
         product="Water pump, 1 HP",
-        note="Fills the overhead tank. A long run usually means a dry run or a leak."),
+        note="Fills the overhead tank. Filling can move earlier (the water waits in the tank), never later. A long run usually means a dry run or a leak."),
     "microwave": ApplianceProfile(
         key="microwave", name="Microwave", icon="", category=ON_DEMAND,
         rated_kw=1.1, on_threshold_kw=0.5, typical_run_min=(1, 8),

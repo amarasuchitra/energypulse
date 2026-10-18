@@ -14,6 +14,14 @@ dataset (34,168 hourly rows, December 2006 – November 2010) and a trained
 > meter feed. To use your own readings, upload a CSV — see
 > [Using your own data](#using-your-own-data).
 
+## Advice that thinks and talks like a person (V4.6)
+
+- **One routine time per habit.** Timing tips give one fixed time for each daily habit (a morning and an evening geyser are two habits), not a different time every day.
+- **The smallest change that keeps most of the saving.** Among times that keep 90% of the best saving, the one closest to the current habit is chosen; changes under 15 minutes or under Rs. 0.25 a run are left out.
+- **Common sense built in.** A geyser or water pump is only moved earlier, never after the water is needed; a geyser at most 2 hours earlier, with its heat loss while waiting taken off the saving. A washing machine moves at most 4 hours, in waking hours.
+- **Written like an energy advisor.** Each tip says what the habit is now, what it costs, the new time, why it is safe, the saving per month and per year, and a practical tip.
+- Measured on 5 simulated homes, the previous planner moved hot water or pumping to after it was needed in 137 of 243 moves, by 4.9 hours on average; the new one never does, moves by 1.4 hours on average and needs about 2 times per home to remember. Details in [AUDIT.md](AUDIT.md), section 6.
+
 ## Live monitoring, alerts and saved appliances (V4.5)
 
 - **A forecast for the live meter.** The dashboard's simulated meter now has its own next-hour model, trained on simulated homes and tested on others it never saw (results in [MODEL_REPORT.md](MODEL_REPORT.md)). The card shows the hour it is for, a 90% range and when it was made. The live reading updates every second.

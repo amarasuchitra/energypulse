@@ -185,7 +185,8 @@ def alert_text(result: dict, culprit: Optional[dict]) -> tuple:
 
 # ----------------------------------------------------------------- the pipeline
 def run_check(db, fc, household_id: str, minute_df: pd.DataFrame, now: pd.Timestamp, owned,
-              people: Optional[List[dict]] = None, service=None, language: str = "en") -> dict:
+              people: Optional[List[dict]] = None, service=None, language: str = "en",
+              context: Optional[dict] = None) -> dict:
     """
     Bring the forecast log up to date for one household and raise an alert if
     use is above forecast.  Safe to call on every dashboard refresh: forecasts
@@ -203,7 +204,7 @@ def run_check(db, fc, household_id: str, minute_df: pd.DataFrame, now: pd.Timest
     hourly = hourly[pd.to_datetime(hourly["datetime"]) < now.floor("h")].dropna(subset=[TARGET])
     if hourly.empty:
         return out
-    preds = meter_hour_forecasts(fc, hourly)
+    preds = meter_hour_forecasts(fc, hourly, context)
     recent = preds[preds["target_hour"] >= now.floor("h") - pd.Timedelta(hours=48)]
     out["logged"] = db.log_forecasts(household_id, SOURCE, recent[["target_hour", "predicted_kw", "lower_kw",
                                                                     "upper_kw"]].itertuples(index=False),

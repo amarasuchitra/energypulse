@@ -103,6 +103,7 @@ def run_daily_briefs(db=None, service=None, date: Optional[str] = None) -> Dict[
                 continue
             owned = owned_appliances(home)
             scenario = with_habits(list(SCENARIOS)[0], home)
+            from meter_source import meter_context
             brief = make_brief(date, scenario, owned, household_rate(db, hid), True)
             if not brief:
                 counts["failed"] += 1
@@ -259,7 +260,8 @@ def check_meter_usage(db=None, service=None, fc=None) -> Dict[str, int]:
             minute_df = detected_history(str(now.date()), scenario, owned)
             res = monitoring.run_check(db, fc, hid, minute_df, now, owned,
                                        people=household_people(db, hid, h["name"], h["email"]),
-                                       service=service, language=h.get("preferred_language") or "en")
+                                       service=service, language=h.get("preferred_language") or "en",
+                                       context=meter_context(scenario, owned))
             counts["checked"] += 1
             counts["alerts"] += int(bool(res.get("alert")))
         except Exception as e:

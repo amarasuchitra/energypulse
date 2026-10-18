@@ -136,18 +136,18 @@ model, because this home's seasons (French winter heating) say nothing about ano
 
 ## Appliance scheduling (optimisation)
 
-- For each shiftable appliance run, every allowed start time (15-minute steps) is costed against the
-  time-of-day tariff, within the household's limits (quiet hours, allowed hours, how far ahead a geyser
-  may heat).
-- Appliances are planned together, biggest saving first, against each past day's actual load: a run is
-  moved only to a time where the home would have stayed under 85% of its sanctioned load on that day,
-  and each accepted move is added to that day's load before the next is planned.
+- The scheduler plans the way a sensible person would: one fixed time per daily habit (runs grouped by time
+  of day), the smallest change that keeps 90% of the best saving, and only directions that make sense
+  (a geyser or water pump only earlier, a geyser at most 2 hours earlier with its heat loss counted, a
+  washing machine at most 4 hours either way in waking hours).
+- Every allowed start time (15-minute steps) is costed against the time-of-day tariff. Appliances are
+  planned together against each past day's actual load; a run moves only where the home stays under 85%
+  of its sanctioned load that day.
 - Every plan is re-checked (`scheduler.validate_plan`): baseline vs optimised energy, cost and peak, and
-  every moved run against allowed hours, quiet hours, how far ahead it may run and the load cap. Moving a
-  run saves money, not energy; energy savings from the efficiency tips are estimates from BEE guidance
-  and are labelled as such.
-- Moves that are each too small to mention are offered together when they add up.
-- On a flat tariff no timing advice is given, because moving use saves nothing.
+  every moved run against all limits. Moving a run saves money, not energy; efficiency-tip savings are
+  estimates from BEE guidance and are labelled as such.
+- Small changes are offered together when they add up; on a flat tariff no timing advice is given.
+- See AUDIT.md section 6 for the measured comparison with the previous planner.
 
 ## Limits
 
