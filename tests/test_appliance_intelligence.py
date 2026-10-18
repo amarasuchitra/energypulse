@@ -107,7 +107,8 @@ def test_faulty_fridge_gets_health_tip_not_switch_off(faulty):
     result = recommend(pred, extract_sessions(pred))
     tips = [s for s in result["suggestions"] if s["appliance"] == "fridge"]
     assert tips and tips[0]["kind"] == "health"
-    assert "Do not switch it off" in tips[0]["detail"]
+    detail = tips[0]["detail"].lower()
+    assert "don't switch it off" in detail or "do not switch it off" in detail
 
 
 def test_dismissed_and_small_tips_are_hidden(faulty):
