@@ -30,6 +30,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install --timeout 300 --retries 3 -r requirements.txt
+          pip install pytest
       
       - name: Run prediction pipeline tests
         run: |
