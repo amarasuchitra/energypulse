@@ -57,7 +57,7 @@ class _Stub:
         self.p[0, labels.index(label)] = 0.9
 
     def predict(self, x, verbose=0):
-        assert x.shape == (1, 224, 224, 3) and -1.0 <= x.min() and x.max() <= 1.0
+        assert x.shape == (1, 224, 224, 3) and 0.0 <= x.min() and x.max() <= 255.0
         return self.p
 
 
@@ -83,7 +83,7 @@ def test_recognise_says_why_when_it_cannot_help():
 
 
 def test_real_model_recognises_the_users_fan_photo(metric):
-    """The real MobileNetV2 (downloads ImageNet weights) on the fan photo from the app."""
+    """The real ConvNeXt-Tiny (downloads ImageNet weights) on the fan photo from the app."""
     pytest.importorskip("keras")
     out, why = recognise(open(FAN, "rb").read())
     if why and "not available" in why:

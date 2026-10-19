@@ -1,8 +1,11 @@
 """
 Recognise the appliance in a photo, for people who have no rating plate to photograph.
 
-A small image model (MobileNetV2, trained on the 1,000 everyday objects of ImageNet,
-about 14 MB, part of TensorFlow which the app already uses) scores the photo.  The
+An image model (ConvNeXt-Tiny, trained on the 1,000 everyday objects of ImageNet,
+about 110 MB downloaded once on first use, run by the TensorFlow the app already uses)
+scores the photo.  It was chosen by testing on a real user's ceiling-fan photo: ConvNeXt-Tiny
+said "electric fan" at 53%, EfficientNetV2-S at 29%, while MobileNetV2 and EfficientNet-B0
+did not see a fan at all.  The
 scores of the ImageNet objects that are household appliances are added up per
 appliance type in the app's catalogue, e.g. "electric fan" -> ceiling fan,
 "washer" -> washing machine.  The top few types are offered for the user to confirm;
@@ -51,12 +54,12 @@ _LABELS: Optional[List[str]] = None
 
 
 def _load():
-    """The image model and its 1,000 labels, loaded once (downloads ~14 MB the first time)."""
+    """The image model and its 1,000 labels, loaded once (downloads ~110 MB the first time)."""
     global _MODEL, _LABELS
     if _MODEL is None:
         import keras
-        _MODEL = keras.applications.MobileNetV2(weights="imagenet", include_top=True)
-        from keras.applications.mobilenet_v2 import decode_predictions
+        _MODEL = keras.applications.ConvNeXtTiny(weights="imagenet", include_top=True)
+        from keras.applications.convnext import decode_predictions
         dummy = np.zeros((1, 1000), dtype="float32")
         dummy[0] = np.arange(1000)                      # descending order gives every label once
         decoded = decode_predictions(dummy, top=1000)[0]
@@ -72,8 +75,7 @@ def _prepare(data: bytes) -> np.ndarray:
     from PIL import Image, ImageOps
     img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
     img = ImageOps.fit(img, (224, 224))                 # centre crop to the model's input size
-    x = np.asarray(img, dtype="float32")[None]
-    return x / 127.5 - 1.0                              # MobileNetV2's own scaling to [-1, 1]
+    return np.asarray(img, dtype="float32")[None]       # 0-255: ConvNeXt normalises inside the model
 
 
 def scores_to_types(probs: np.ndarray, labels: List[str], top: int = 3) -> List[dict]:
