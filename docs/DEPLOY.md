@@ -38,3 +38,10 @@ instance with at least 1 GB of memory.
   (see `models/forecast_meta.json`).
 - **Light and dark mode** is a setting of the running server, so all visitors share it.
 - **First visit after a restart is slow** while the models load.
+- **Reboot after an update that changes `backend/`.** Streamlit Cloud reloads
+  `frontend/app.py` when new code arrives but can keep the old copy of a `backend/`
+  module in memory, which shows up as an `ImportError` ("cannot import name ...").
+  Open the app, then Manage app → ⋮ → Reboot app.
+- **Tests before release.** Push to a branch other than `main` first; the GitHub
+  workflow runs every test and lists the result of each test ID from the testing brief
+  in the run's annotations. Merge into `main` (which redeploys) only when it is green.
