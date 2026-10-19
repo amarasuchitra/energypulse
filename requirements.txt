@@ -35,3 +35,7 @@ cryptography>=42
 reportlab>=4.0
 beautifulsoup4>=4.12
 requests>=2.31
+
+# Appliance photo recognition (CLIP, run locally; see backend/appliance_vision.py)
+onnxruntime>=1.17,<2
+tokenizers>=0.15,<1

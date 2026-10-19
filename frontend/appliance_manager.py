@@ -161,7 +161,7 @@ def _photos(item: dict, household_id: str, prefix: str) -> bool:
                     "success", "Read from the rating plate: " + ", ".join(_say(k, v) for k, v in figures.items())
                     + "." + how + " Check them below and correct anything misread.")
             else:
-                st.session_state[f"{prefix}_ocr_msg"] = _recognise_message(data, item)
+                st.session_state[f"{prefix}_ocr_msg"] = _recognise_message(data, item, text or "")
             return True
         msg = st.session_state.get(f"{prefix}_ocr_msg")
         if msg:
@@ -172,23 +172,46 @@ def _photos(item: dict, household_id: str, prefix: str) -> bool:
     return False
 
 
-def _recognise_message(data: bytes, item: dict) -> tuple:
+def describe_recognition(r: dict) -> str:
+    """One line for a recognition result: type (sure), company, model number, typical power."""
+    if not r.get("types"):
+        return ""
+    g = r["types"][0]
+    brand = r.get("brand")
+    who = f"{brand['name']} " if brand else ""
+    line = f"**Looks like a {who}{g['name'].lower()}** ({g['score']:.0%} sure)"
+    if brand:
+        line += f"; company {'read from the text on it' if brand['source'] == 'printed on it' else 'recognised from its logo or look'}"
+    if r.get("model_no"):
+        line += f"; model number {r['model_no']}"
+    if g.get("typical_w"):
+        line += f". A typical one uses about {g['typical_w']:.0f} W"
+    others = ", ".join(f"{o['name'].lower()} ({o['score']:.0%})" for o in r["types"][1:])
+    return line + "." + (f" Could also be: {others}." if others else "")
+
+
+def _recognise_message(data: bytes, item: dict, text: str = "") -> tuple:
     """No rating plate in the photo: say so, and say what the appliance looks like."""
     from appliance_vision import recognise
     with st.spinner("Recognising the appliance..."):
-        guesses, why = recognise(data)
+        r = recognise(data, text)
     plate = "No rating plate was found in this photo, so no figures were read from it. "
-    if not guesses:
-        return ("info", plate + (why or "") + " The typical figures for this appliance stay in use.")
-    g = guesses[0]
+    if not r["types"]:
+        return ("info", plate + (r["why"] or "") + " The typical figures for this appliance stay in use.")
+    g = r["types"][0]
     mine = catalog.get_type(item.get("type_key", ""))
-    typical = f" A typical {g['name'].lower()} uses about {g['typical_w']:.0f} W." if g.get("typical_w") else ""
     if mine is not None and g["type_key"] != mine.key:
         return ("warning", plate + f"The photo looks like a {g['name'].lower()} ({g['score']:.0%} sure), but this entry "
                 f"is a {mine.name.lower()}. Check that the photo is of the right appliance.")
-    return ("success", plate + f"It looks like a {g['name'].lower()} ({g['score']:.0%} sure).{typical} Those typical "
-            "figures are already used for it. For exact figures, photograph the label on the appliance "
-            "(on a fan it is on top of the motor; on most others at the back or side).")
+    own = item.setdefault("own", {})
+    if r.get("brand") and not own.get("brand"):
+        own["brand"] = r["brand"]["name"]
+    if r.get("model_no") and not own.get("model_no"):
+        own["model_no"] = r["model_no"]
+    return ("success", plate + describe_recognition(r).replace("**", "") + " Typical figures for it are in use. "
+            + ("Use 'Search the web' below with the brand and model for exact figures." if r.get("brand") or
+               r.get("model_no") else "For exact figures, photograph the label (on a fan it is on top of the motor; "
+               "on most others at the back or side)."))
 
 
 def _own_figures(item: dict, prefix: str) -> None:
@@ -314,15 +337,15 @@ def render_drop_zone(db, household_id: str, notify, key: str = "drop", compact: 
             text, ok = read_plate(data)
         figures = parse_plate(text) if ok else {}
         plate = bool(figures) and looks_like_plate(figures)
-        seen, why = [], None
+        rec = {"types": [], "brand": None, "model_no": None, "why": None}
         if not plate:                                       # a photo of the appliance itself: recognise it
             from appliance_vision import recognise
-            with st.spinner("Recognising the appliance..."):
-                seen, why = recognise(data)
-        result = {"pid": pid, "ok": ok, "text": text.strip(), "plate": plate, "seen": seen, "why": why,
+            with st.spinner("Recognising the appliance, its company and model..."):
+                rec = recognise(data, text or "")
+        result = {"pid": pid, "ok": ok, "text": text.strip(), "plate": plate, "rec": rec,
                   "figures": {k: v for k, v in figures.items() if k in ("rated_w", "voltage_v", "current_a", "frequency_hz",
                                                                        "star", "capacity", "model_no")} if plate else {},
-                  "guess": guess_type(text, figures) if plate else (seen[0]["type_key"] if seen else "")}
+                  "guess": guess_type(text, figures) if plate else (rec["types"][0]["type_key"] if rec["types"] else "")}
         st.session_state[f"{key}_result"] = result
 
     with st.container(border=True):
@@ -330,19 +353,16 @@ def render_drop_zone(db, household_id: str, notify, key: str = "drop", compact: 
         left.image(data, width=220)
         with right:
             fig = result["figures"]
-            seen = result.get("seen") or []
+            rec = result.get("rec") or {}
             if fig:
                 st.markdown("**Read from the rating plate:** " + ", ".join(_say(k, v) for k, v in fig.items()))
-            elif seen:
-                top = seen[0]
-                others = ", ".join(f"{g['name'].lower()} ({g['score']:.0%})" for g in seen[1:])
-                st.markdown(f"**Looks like a {top['name'].lower()}** ({top['score']:.0%} sure)"
-                            + (f"; typical power about {top['typical_w']:.0f} W." if top.get("typical_w") else ".")
-                            + (f" Could also be: {others}." if others else ""))
-                st.caption("Recognised from the picture, not read from a label, so typical figures for this kind of "
-                           "appliance are used. Change the type below if it is wrong.")
+            elif rec.get("types"):
+                st.markdown(describe_recognition(rec))
+                st.caption("Recognised from the picture, so typical figures for this kind of appliance are used. "
+                           "Change anything below that is wrong; with the company and model, 'Search the web' on the "
+                           "appliance finds its exact figures.")
             else:
-                st.caption((result.get("why") or "This photo could not be recognised.")
+                st.caption((rec.get("why") or "This photo could not be recognised.")
                            + " Choose the appliance below; you can add exact figures later.")
             types = [t for t in catalog.CATALOG]
             names = [t.name for t in types]
@@ -354,6 +374,12 @@ def render_drop_zone(db, household_id: str, notify, key: str = "drop", compact: 
             same = [i for i, it in enumerate(items) if isinstance(it, dict) and it.get("type_key") == t.key]
             choices = ["Add it as a new appliance"] + [f"It is my {items[i]['name']} ({n})" for n, i in enumerate(same, 1)]
             where = st.radio("Where does it go?", choices, index=1 if same else 0, key=f"{key}_where_{pid}")
+            bcol, mcol = st.columns(2)
+            known = (rec.get("brand") or {}).get("name", "") if not fig else ""
+            brand = bcol.text_input("Company (brand)", value=known, key=f"{key}_brand_{pid}",
+                                    placeholder="e.g. LG, Havells, Voltas")
+            model_no = mcol.text_input("Model number (if shown)", value=fig.get("model_no") or rec.get("model_no") or "",
+                                       key=f"{key}_model_{pid}", placeholder="on the label or the bill")
             if st.button("Save", type="primary", key=f"{key}_save_{pid}"):
                 if where == choices[0]:
                     item = catalog.item_for(t.key)
@@ -368,6 +394,12 @@ def render_drop_zone(db, household_id: str, notify, key: str = "drop", compact: 
                 if fig.get("rated_w"):
                     item["spec_mode"] = "own"
                     item["own"] = {**(item.get("own") or {}), **fig}
+                brand, model_no = brand.strip()[:30], model_no.strip()[:30]
+                if brand or model_no:
+                    item["own"] = {**(item.get("own") or {}), **({"brand": brand} if brand else {}),
+                                   **({"model_no": model_no} if model_no else {})}
+                    if brand and where == choices[0] and not item["name"].lower().startswith(brand.lower()):
+                        item["name"] = f"{brand} {item['name']}"[:40]
                 _save(db, household_id)
                 st.session_state.pop(f"{key}_result", None)
                 st.session_state[f"{key}_round"] = round_ + 1
