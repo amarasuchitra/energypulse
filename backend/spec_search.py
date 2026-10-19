@@ -99,18 +99,35 @@ def figures_in(text: str, model: str = "") -> dict:
                                                     "capacity", "from_current", "from_hp")}
 
 
+def _norm(s: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
+
+
 def look_up(query: str, fetch_get: Callable = _get, fetch_post: Callable = _post,
-            max_pages: int = MAX_PAGES) -> dict:
+            max_pages: int = MAX_PAGES, model: str = "") -> dict:
+    """
+    Search, read the top pages and pick out figures.  With `model`, each source also says whether
+    the page itself names that model number ("mentions_model"), and pages that do are read first.
+    """
     query = " ".join(query.split())[:120]
     results = search(f"{query} specifications power consumption watts", fetch_get, fetch_post)
+    if model:
+        key = _norm(model)
+        results.sort(key=lambda r: key not in _norm(r["title"] + r["url"]))     # pages naming it first
     sources = []
-    for r in results[:max_pages]:
+    for r in results[:max_pages + (3 if model else 0)]:
         html = fetch_get(r["url"])
         if not html:
             continue
-        found = figures_in(page_text(html), query)
+        text = page_text(html)
+        found = figures_in(text, query)
         if any(k in found for k in ("rated_w", "current_a", "star", "capacity")):
-            sources.append({**r, "found": found})
+            src = {**r, "found": found}
+            if model:
+                src["mentions_model"] = _norm(model) in _norm(text)
+            sources.append(src)
+        if len(sources) >= max_pages:
+            break
     votes: Dict[str, Counter] = {}
     for s in sources:
         for k, v in s["found"].items():

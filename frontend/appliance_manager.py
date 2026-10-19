@@ -17,6 +17,7 @@ saved straight away and the 3D home and every figure follow them.
 
 import copy
 import json
+from typing import Optional
 
 import streamlit as st
 
@@ -382,6 +383,7 @@ def render_drop_zone(db, household_id: str, notify, key: str = "drop", compact: 
                                     placeholder="e.g. LG, Havells, Voltas")
             model_no = mcol.text_input("Model number (if shown)", value=fig.get("model_no") or rec.get("model_no") or "",
                                        key=f"{key}_model_{pid}", placeholder="on the label or the bill")
+            exact = _exact_panel(data, t, brand, model_no, f"{key}_x_{pid}")
             if st.button("Save", type="primary", key=f"{key}_save_{pid}"):
                 if where == choices[0]:
                     mc = (rec.get("model_class") or {}) if not fig else {}
@@ -398,6 +400,12 @@ def render_drop_zone(db, household_id: str, notify, key: str = "drop", compact: 
                 if fig.get("rated_w"):
                     item["spec_mode"] = "own"
                     item["own"] = {**(item.get("own") or {}), **fig}
+                if exact and exact.get("status") == "exact":         # the confirmed model and its real figures
+                    item["spec_mode"] = "own"
+                    item["own"] = {**(item.get("own") or {}), **exact["figures"],
+                                   "looked_up": exact["query"], "source_urls": [s_["url"] for s_ in exact["sources"]],
+                                   "exact": True}
+                    brand, model_no = exact.get("brand") or brand, exact["model_no"]
                 brand, model_no = brand.strip()[:30], model_no.strip()[:30]
                 if brand or model_no:
                     item["own"] = {**(item.get("own") or {}), **({"brand": brand} if brand else {}),
@@ -413,6 +421,48 @@ def render_drop_zone(db, household_id: str, notify, key: str = "drop", compact: 
             if result["text"]:
                 with st.expander("What the camera read"):
                     st.text(result["text"][:1500])
+
+
+def _exact_panel(front: bytes, t, brand: str, model_no: str, key: str) -> Optional[dict]:
+    """Get the exact model: from a label/box/QR photo or the invoice, confirmed on the web."""
+    import product_finder as pf
+    with st.expander("Get the exact model (label, box, QR code or invoice)", expanded=False):
+        st.caption("A photo of the outside cannot tell the exact model: models that look the same differ in "
+                   "tonnage or star rating, printed only on the label. "
+                   + (f"On a {t.name.lower()} the label is {pf.WHERE_LABEL.get(t.key, 'on the body')}. " if t else "")
+                   + pf.ALSO)
+        extra = st.file_uploader("Photos of the label, the box or a QR code", type=["jpg", "jpeg", "png"],
+                                 accept_multiple_files=True, key=f"{key}_photos")
+        bill = st.file_uploader("Purchase invoice (PDF or photo)", type=["pdf", "jpg", "jpeg", "png"],
+                                key=f"{key}_bill")
+        if st.button("Find the exact model", key=f"{key}_go", type="primary",
+                     disabled=not (extra or bill or model_no.strip())):
+            with st.spinner("Reading the model number and checking it on the web..."):
+                photos = [f.getvalue() for f in (extra or [])] + [front]
+                if model_no.strip() and not extra and not bill:
+                    r = pf.confirm(brand.strip(), model_no.strip(), t.name if t else "")
+                    r.update({"tried": [{"model_no": model_no.strip(), "from": "typed", "status": r["status"]}],
+                              "where": ""})
+                else:
+                    r = pf.find_exact(photos, (bill.getvalue(), bill.name) if bill else None,
+                                      t.key if t else None, brand.strip())
+            st.session_state[key] = r
+        r = st.session_state.get(key)
+        if r:
+            if r["status"] == "exact":
+                figs = ", ".join(_say(k, v) for k, v in r["figures"].items())
+                st.success(f"Exact model: {r.get('brand') or ''} {r['model_no']}. {figs}. {r['reason']} "
+                           "These figures are saved with the appliance.")
+                st.caption("Sources: " + " · ".join(f"[{(s_['title'] or s_['url'])[:50]}]({s_['url']})"
+                                                     for s_ in r["sources"]))
+            elif r["status"] == "no model number":
+                st.warning(r["reason"] + " " + (r.get("where") or ""))
+            else:
+                st.warning(f"Not confirmed: {r['reason']}"
+                           + (" Tried: " + ", ".join(f"{x['model_no']} ({x['from']})" for x in r.get("tried", []))
+                              if r.get("tried") else "")
+                           + " Typical figures stay in use until the exact model is confirmed.")
+        return r
 
 
 # ---------------------------------------------------------------- the page
