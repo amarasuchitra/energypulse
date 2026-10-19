@@ -21,7 +21,31 @@ PW = "Tr4il-Mango-Kettle"
 TIMEOUT = 600
 
 
+import logging  # noqa: E402
+import traceback  # noqa: E402
+
+
+class _Grab(logging.Handler):
+    """Keeps the app's logged exceptions so a failing test can show the real cause."""
+    records = []
+
+    def emit(self, record):
+        if record.exc_info:
+            self.records.append("".join(traceback.format_exception(*record.exc_info))[-3000:])
+        elif record.levelno >= logging.ERROR:
+            self.records.append(record.getMessage()[-1500:])
+
+
+logging.getLogger().addHandler(_Grab())
+logging.getLogger("streamlit").addHandler(_Grab())
+
+
 def _new():
+    try:
+        from streamlit import config as _cfg
+        _cfg.set_option("client.showErrorDetails", "full")
+    except Exception:                                          # noqa: BLE001
+        pass
     at = AppTest.from_file(APP, default_timeout=TIMEOUT)
     at.run()
     _ok(at)
@@ -32,7 +56,8 @@ def _ok(at):
     if at.exception:
         e = at.exception[0]
         raise AssertionError(f"app error: {getattr(e, 'message', e.value)}\n"
-                             + "\n".join(getattr(e, "stack_trace", []) or [])[-3000:])
+                             + "\n".join(getattr(e, "stack_trace", []) or [])[-3000:]
+                             + "\nLOGGED:\n" + "\n---\n".join(_Grab.records[-2:]))
 
 
 def _email():
