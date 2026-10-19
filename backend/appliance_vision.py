@@ -35,7 +35,9 @@ CACHE_DIR = os.environ.get("ENERGYPULSE_MODEL_CACHE") or os.path.join(os.path.ex
 MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype="float32")
 STD = np.array([0.26862954, 0.26130258, 0.27577711], dtype="float32")
 SCALE = 100.0                 # CLIP's learned logit scale
-MIN_TYPE = 0.20               # below this a type is not offered
+MIN_TYPE = 0.25               # the best type must reach this, or the app says it is not sure
+MIN_SHOW_OTHER = 0.10         # other likely types listed only above this
+NONE_VETO = 0.50              # "not an appliance" must beat all appliances together by this much
 MIN_BRAND, BRAND_MARGIN = 0.35, 0.15
 
 # Several descriptions per type; their embeddings are averaged (prompt ensembling).
@@ -310,29 +312,27 @@ def recognise(data: bytes, text: str = "", image_vec: Optional[np.ndarray] = Non
         else:
             out["why"] = f"Recognising appliances from photos is not available right now ({type(exc).__name__})."
         return out
-    groups = dict(DESCRIPTIONS)
-    groups["_none"] = NOT_APPLIANCE
-    probs = classify(image_vec, groups, embed)
+    # "Not an appliance" is a veto, judged against the best appliance; the type itself is chosen
+    # among appliance descriptions only, so a plain product photo is not lost to "a document".
+    probs = classify(image_vec, dict(DESCRIPTIONS), embed)
     import catalog
-    ranked = sorted(((k, v) for k, v in probs.items()), key=lambda kv: -kv[1])
-    best_type = next(((k, v) for k, v in ranked if k != "_none"), (None, 0.0))
-    if ranked[0][0] == "_none" and best_type[1] < MIN_TYPE:
+    ranked = sorted(probs.items(), key=lambda kv: -kv[1])
+    veto = classify(image_vec, {"_none": NOT_APPLIANCE, ranked[0][0]: DESCRIPTIONS[ranked[0][0]]}, embed)
+    if veto["_none"] > NONE_VETO:
         out["why"] = "This does not look like a photo of an appliance. Take a photo of the appliance itself."
         return out
-    if best_type[1] < MIN_TYPE:
+    if ranked[0][1] < MIN_TYPE:
         out["why"] = ("The app could not tell which appliance this is. Take a clearer photo of the whole "
                       "appliance in good light, or pick it from the list.")
         return out
-    for k, v in ranked:
-        if k == "_none" or v < MIN_TYPE and out["types"]:
-            continue
+    for k, v in ranked[:3]:
+        if out["types"] and v < MIN_SHOW_OTHER:
+            break
         t = catalog.get_type(k)
         if t is None:
             continue
         spec = catalog.specs(catalog.default_model(k).id) or {}
         out["types"].append({"type_key": k, "name": t.name, "score": round(v, 3), "typical_w": spec.get("rated_w")})
-        if len(out["types"]) == 3:
-            break
     top = out["types"][0]["type_key"]
     if VISUAL_CLASSES.get(top):
         cp = sorted(classify(image_vec, VISUAL_CLASSES[top], embed).items(), key=lambda kv: -kv[1])
