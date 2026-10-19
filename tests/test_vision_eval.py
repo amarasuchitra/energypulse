@@ -127,7 +127,7 @@ def _score(test_set, multi=True):
 EVAL = pytest.mark.skipif(not os.environ.get("VISION_EVAL"), reason="real-photo evaluation runs in CI (VISION_EVAL=1)")
 
 
-@EVAL
+@pytest.mark.skipif(not os.environ.get("VISION_COMPARE"), reason="size comparison runs on demand (VISION_COMPARE=1)")
 @pytest.mark.parametrize("size", ["base32", "base16", "large14q4", "large14"])
 def test_compare_model_sizes(size, metric):
     """Records accuracy and speed of each CLIP size on the same photos (no pass mark: a comparison)."""
@@ -163,5 +163,5 @@ def test_recognition_accuracy_on_real_photos(metric):
     metric("vision_eval_misses", [f"{r['key']} <- {r['top']} {r['score']} {r['why']} | {r['file'][5:40]}"
                                   for r in rows if r["top"] != r["key"]])
     assert n >= 30, summary                      # enough photos were reachable to judge
-    assert answered and top1 / answered >= 0.75, summary      # when it gives an answer, it is usually right
-    assert top1 / n >= 0.55, summary
+    assert answered and top1 / answered >= 0.85, summary      # when it gives an answer, it is right
+    assert top1 / n >= 0.82, summary                           # measured 89.3% for the model in use

@@ -35,7 +35,11 @@ MODELS = {
     "large14": ("Xenova/clip-vit-large-patch14", "onnx/vision_model_quantized.onnx", "onnx/text_model_quantized.onnx"),
     "large14q4": ("Xenova/clip-vit-large-patch14", "onnx/vision_model_q4.onnx", "onnx/text_model_quantized.onnx"),
 }
-DEFAULT_MODEL = "base32"
+# Measured on 84 real photos (CI, 2026-10-19): base32 75.0% correct, base16 84.5%, large14 86.9%,
+# large14q4 89.3% (and 95.2% with the right type in the top three).  large14q4 is used; if the
+# host cannot load it (memory), FALLBACK is used instead.
+DEFAULT_MODEL = "large14q4"
+FALLBACK_MODEL = "base16"
 REPO, FILES = "", {}
 CACHE_DIR = os.environ.get("ENERGYPULSE_MODEL_CACHE") or os.path.join(os.path.expanduser("~"), ".cache",
                                                                        "energypulse", "clip")
@@ -175,10 +179,20 @@ def _load(part: str = "vision"):
         import onnxruntime as ort
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = 2
-        if part == "text":
-            from tokenizers import Tokenizer
-            _SESS["tok"] = Tokenizer.from_file(_download(FILES["tokenizer"]))
-        _SESS[part] = ort.InferenceSession(_download(FILES[part]), opts, providers=["CPUExecutionProvider"])
+        try:
+            if part == "text":
+                from tokenizers import Tokenizer
+                _SESS["tok"] = Tokenizer.from_file(_download(FILES["tokenizer"]))
+            _SESS[part] = ort.InferenceSession(_download(FILES[part]), opts, providers=["CPUExecutionProvider"])
+        except (MemoryError, RuntimeError, OSError) as exc:
+            current = next((k for k, v in MODELS.items() if v[0] == REPO and v[1] == FILES["vision"]), "")
+            if current == FALLBACK_MODEL:
+                raise
+            import logging
+            logging.getLogger("energypulse.vision").warning(
+                "Could not load %s (%s); using the smaller %s", current, type(exc).__name__, FALLBACK_MODEL)
+            configure(FALLBACK_MODEL)                       # smaller model: the descriptions are worked out again
+            return _load(part)
     return _SESS
 
 
