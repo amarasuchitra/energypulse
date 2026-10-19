@@ -18,7 +18,7 @@ import hashlib
 import io
 import os
 import re
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from paths import DATA_DIR
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
@@ -123,7 +123,35 @@ def parse_plate(text: str) -> dict:
         out["rated_w"] = round(hp * 746 / 0.8, 0)
         out["from_hp"] = True
     out["lines"] = found
+    out["plate_signals"] = plate_signals(text, out)
     return out
+
+
+def plate_signals(text: str, figures: dict) -> List[str]:
+    """
+    The signs that this text came from a real rating plate.  A photo of the appliance itself
+    (not its label) gives random letters in which a stray "5 A" can appear; numbers are only
+    trusted when at least two of these signs are present.
+    """
+    low = (text or "").lower()
+    signs = []
+    if "voltage_v" in figures:
+        signs.append("voltage")
+    if "frequency_hz" in figures:
+        signs.append("frequency")
+    if re.search(r"\d\s*(k?w)\b", low) and "from_current" not in figures:
+        signs.append("watts")
+    if "model_no" in figures:
+        signs.append("model")
+    if "star" in figures:
+        signs.append("star")
+    if re.search(r"\b(rated|input|power consumption|made in|serial|s\.?\s*no|mfg|isi|bee)\b", low):
+        signs.append("plate words")
+    return signs
+
+
+def looks_like_plate(figures: dict) -> bool:
+    return len(figures.get("plate_signals", [])) >= 2
 
 
 # ------------------------------------------------------------------- photos

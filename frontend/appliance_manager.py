@@ -21,7 +21,7 @@ import json
 import streamlit as st
 
 import catalog
-from nameplate import PHOTO_TYPES, load_photo, parse_plate, read_plate, store_photo
+from nameplate import PHOTO_TYPES, load_photo, looks_like_plate, parse_plate, read_plate, store_photo
 
 
 def spec_table(spec: dict) -> str:
@@ -141,29 +141,27 @@ def _photos(item: dict, household_id: str, prefix: str) -> bool:
                 item["photos"].remove(pid)
                 return True
         newest = st.session_state.get(f"{prefix}_newest") or item["photos"][-1]
-        if st.button("Read the rating plate from the photo", key=f"{prefix}_ocr", type="primary"):
-            data = load_photo(household_id, newest)
-            text, ok = read_plate(data or b"")
-            if ok is False:
-                st.session_state[f"{prefix}_ocr_msg"] = ("error", "Text reading is not available on this server. Type the figures instead.")
+        if st.button("Read the photo", key=f"{prefix}_ocr", type="primary",
+                     help="A photo of the rating plate gives the exact figures. A photo of the appliance itself "
+                          "is recognised, and typical figures for that kind of appliance are used."):
+            data = load_photo(household_id, newest) or b""
+            with st.spinner("Reading the photo..."):
+                text, ok = read_plate(data)
+                found = parse_plate(text) if ok else {}
+            st.session_state[f"{prefix}_ocr_text"] = (text or "").strip()
+            figures = {k: v for k, v in found.items() if k in ("rated_w", "voltage_v", "current_a", "frequency_hz",
+                                                                 "star", "capacity", "model_no")}
+            if ok and figures and looks_like_plate(found):
+                _fill(item, prefix, figures)                # the boxes below are drawn after this point
+                if figures.get("model_no"):
+                    st.session_state[f"{prefix}_q"] = f"{figures['model_no']} {item.get('name', '')}".strip()
+                how = (" Power was worked out from the current printed on the plate." if found.get("from_current")
+                       else " Power was worked out from the motor size (HP)." if found.get("from_hp") else "")
+                st.session_state[f"{prefix}_ocr_msg"] = (
+                    "success", "Read from the rating plate: " + ", ".join(_say(k, v) for k, v in figures.items())
+                    + "." + how + " Check them below and correct anything misread.")
             else:
-                found = parse_plate(text)
-                figures = {k: v for k, v in found.items() if k in ("rated_w", "voltage_v", "current_a", "frequency_hz",
-                                                                     "star", "capacity", "model_no")}
-                st.session_state[f"{prefix}_ocr_text"] = text.strip()
-                if figures:
-                    _fill(item, prefix, figures)            # the boxes below are drawn after this point
-                    if figures.get("model_no"):
-                        st.session_state[f"{prefix}_q"] = f"{figures['model_no']} {item.get('name', '')}".strip()
-                    how = (" Power was worked out from the current printed on the plate." if found.get("from_current")
-                           else " Power was worked out from the motor size (HP)." if found.get("from_hp") else "")
-                    st.session_state[f"{prefix}_ocr_msg"] = (
-                        "success", "Read from the plate: " + ", ".join(_say(k, v) for k, v in figures.items())
-                        + "." + how + " Check them below and correct anything misread.")
-                else:
-                    st.session_state[f"{prefix}_ocr_msg"] = (
-                        "warning", "No figures could be read. Try a sharper, closer photo of the plate in good light, "
-                                   "or type the figures below.")
+                st.session_state[f"{prefix}_ocr_msg"] = _recognise_message(data, item)
             return True
         msg = st.session_state.get(f"{prefix}_ocr_msg")
         if msg:
@@ -172,6 +170,25 @@ def _photos(item: dict, household_id: str, prefix: str) -> bool:
             with st.expander("What the camera read"):
                 st.text(st.session_state[f"{prefix}_ocr_text"][:1500])
     return False
+
+
+def _recognise_message(data: bytes, item: dict) -> tuple:
+    """No rating plate in the photo: say so, and say what the appliance looks like."""
+    from appliance_vision import recognise
+    with st.spinner("Recognising the appliance..."):
+        guesses, why = recognise(data)
+    plate = "No rating plate was found in this photo, so no figures were read from it. "
+    if not guesses:
+        return ("info", plate + (why or "") + " The typical figures for this appliance stay in use.")
+    g = guesses[0]
+    mine = catalog.get_type(item.get("type_key", ""))
+    typical = f" A typical {g['name'].lower()} uses about {g['typical_w']:.0f} W." if g.get("typical_w") else ""
+    if mine is not None and g["type_key"] != mine.key:
+        return ("warning", plate + f"The photo looks like a {g['name'].lower()} ({g['score']:.0%} sure), but this entry "
+                f"is a {mine.name.lower()}. Check that the photo is of the right appliance.")
+    return ("success", plate + f"It looks like a {g['name'].lower()} ({g['score']:.0%} sure).{typical} Those typical "
+            "figures are already used for it. For exact figures, photograph the label on the appliance "
+            "(on a fan it is on top of the motor; on most others at the back or side).")
 
 
 def _own_figures(item: dict, prefix: str) -> None:
@@ -296,10 +313,16 @@ def render_drop_zone(db, household_id: str, notify, key: str = "drop", compact: 
         with st.spinner("Reading the photo..."):
             text, ok = read_plate(data)
         figures = parse_plate(text) if ok else {}
-        result = {"pid": pid, "ok": ok, "text": text.strip(),
+        plate = bool(figures) and looks_like_plate(figures)
+        seen, why = [], None
+        if not plate:                                       # a photo of the appliance itself: recognise it
+            from appliance_vision import recognise
+            with st.spinner("Recognising the appliance..."):
+                seen, why = recognise(data)
+        result = {"pid": pid, "ok": ok, "text": text.strip(), "plate": plate, "seen": seen, "why": why,
                   "figures": {k: v for k, v in figures.items() if k in ("rated_w", "voltage_v", "current_a", "frequency_hz",
-                                                                       "star", "capacity", "model_no")},
-                  "guess": guess_type(text, figures)}
+                                                                       "star", "capacity", "model_no")} if plate else {},
+                  "guess": guess_type(text, figures) if plate else (seen[0]["type_key"] if seen else "")}
         st.session_state[f"{key}_result"] = result
 
     with st.container(border=True):
@@ -307,17 +330,25 @@ def render_drop_zone(db, household_id: str, notify, key: str = "drop", compact: 
         left.image(data, width=220)
         with right:
             fig = result["figures"]
+            seen = result.get("seen") or []
             if fig:
-                st.markdown("**Read from the photo:** " + ", ".join(_say(k, v) for k, v in fig.items()))
-            elif result["ok"] is False:
-                st.caption("Text reading is not available here. Choose the appliance below; you can type its figures later.")
+                st.markdown("**Read from the rating plate:** " + ", ".join(_say(k, v) for k, v in fig.items()))
+            elif seen:
+                top = seen[0]
+                others = ", ".join(f"{g['name'].lower()} ({g['score']:.0%})" for g in seen[1:])
+                st.markdown(f"**Looks like a {top['name'].lower()}** ({top['score']:.0%} sure)"
+                            + (f"; typical power about {top['typical_w']:.0f} W." if top.get("typical_w") else ".")
+                            + (f" Could also be: {others}." if others else ""))
+                st.caption("Recognised from the picture, not read from a label, so typical figures for this kind of "
+                           "appliance are used. Change the type below if it is wrong.")
             else:
-                st.caption("No figures could be read from this photo. It is kept with the appliance; for exact figures "
-                           "try a close, sharp photo of the rating plate.")
+                st.caption((result.get("why") or "This photo could not be recognised.")
+                           + " Choose the appliance below; you can add exact figures later.")
             types = [t for t in catalog.CATALOG]
             names = [t.name for t in types]
             guess = next((i for i, t in enumerate(types) if t.key == result["guess"]), 0)
-            kind = st.selectbox("This is a" + (" (recognised from the plate)" if result["guess"] else ""), names,
+            kind = st.selectbox("This is a" + ((" (read from the plate)" if result.get("plate") else
+                                                (" (recognised from the photo)")) if result["guess"] else ""), names,
                                 index=guess, key=f"{key}_type_{pid}")
             t = types[names.index(kind)]
             same = [i for i, it in enumerate(items) if isinstance(it, dict) and it.get("type_key") == t.key]
