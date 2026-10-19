@@ -43,6 +43,9 @@ def main() -> int:
                       if t["outcome"] == "skipped"})
     if skipped:
         emit("notice", "Skipped", "\n".join(f"{t} :: {m}" for t, m in skipped))
+    met = os.path.join(REPORTS, "metrics.json")
+    if os.path.exists(met):
+        emit("notice", "Measured", json.dumps(json.load(open(met, encoding="utf-8")), indent=0, default=str))
     cov = os.path.join(REPORTS, "coverage.json")
     if os.path.exists(cov):
         c = json.load(open(cov, encoding="utf-8"))

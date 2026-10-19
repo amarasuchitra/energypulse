@@ -16,7 +16,7 @@ AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
 from auth import Accounts  # noqa: E402
 from db import DatabaseManager  # noqa: E402
 
-APP = os.path.join("frontend", "app.py")
+APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "app.py")
 PW = "Tr4il-Mango-Kettle"
 TIMEOUT = 600
 
@@ -151,7 +151,7 @@ def test_forgot_password_screen_is_honest_when_email_is_not_set_up(monkeypatch):
 @pytest.mark.brief("E2E-001", "AUTH-001", "AUTH-007", "APP-001", "APP-002", "APP-003", "APP-004", "APP-005",
                    "EDIT-001", "EDIT-002", "EDIT-003", "EDIT-004", "EDIT-007", "EDIT-013", "EDIT-014",
                    "UI-001", "UI-010", "AUTH-023", "AUTH-024", "UI-020")
-def test_register_set_up_edit_sign_out_and_back_in():
+def test_register_set_up_edit_sign_out_and_back_in(metric):
     email = _email()
     at = _new()
     t0 = time.perf_counter()
@@ -187,7 +187,7 @@ def test_register_set_up_edit_sign_out_and_back_in():
     assert other.session_state["auth"]["logged_in"]
     assert "ob_next1" not in {b.key for b in other.button}                   # no setup again
     assert other.button(key="dash_edit_appliances") and "×2" in _texts(other)
-    print(f"sign-up + setup + first dashboard render: {first_render:.1f} s")
+    metric("ui_signup_setup_first_dashboard_s", round(first_render, 2))
 
 
 @pytest.mark.brief("EDIT-008", "APP-023", "EDIT-005", "EDIT-006")

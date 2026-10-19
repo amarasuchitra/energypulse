@@ -23,6 +23,15 @@ import time
 import pytest
 
 _RESULTS = {}          # nodeid -> {"ids": [...], "outcome": str, "message": str, "seconds": float}
+_METRICS = {}          # measured figures quoted in the test report
+
+
+@pytest.fixture
+def metric():
+    """metric(name, value): record a measured figure (timing, error) for tests/reports/metrics.json."""
+    def record(name, value):
+        _METRICS[name] = value
+    return record
 
 
 def pytest_configure(config):
@@ -91,5 +100,7 @@ def pytest_sessionfinish(session, exitstatus):
            "untagged_ids": sorted(i for ids in CATEGORIES.values() for i in ids if i not in by_id),
            "unknown_ids": sorted(i for i in by_id if category_of(i) == "Other")}
     os.makedirs(os.path.join(ROOT, "tests", "reports"), exist_ok=True)
+    with open(os.path.join(ROOT, "tests", "reports", "metrics.json"), "w", encoding="utf-8") as fh:
+        json.dump(_METRICS, fh, indent=1, default=str)
     with open(os.path.join(ROOT, "tests", "reports", "brief_results.json"), "w", encoding="utf-8") as fh:
         json.dump(out, fh, indent=1, default=str)

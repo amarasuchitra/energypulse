@@ -328,7 +328,7 @@ def test_settings_change_the_threshold(db):
 
 
 @pytest.mark.brief("LIVE-016", "UI-017", "UI-018")
-def test_repeated_checks_stay_fast_and_bounded(db):
+def test_repeated_checks_stay_fast_and_bounded(db, metric):
     m = _minutes(days=14)
     t0 = time.perf_counter()
     for i in range(5):
@@ -336,4 +336,4 @@ def test_repeated_checks_stay_fast_and_bounded(db):
     per_check = (time.perf_counter() - t0) / 5
     assert per_check < 5.0                                      # measured, see the report
     assert len(db.forecast_log("hh1", "simulated_meter")) <= 49  # only the last 48 hours are logged
-    print(f"run_check on 14 days of minute data: {per_check:.3f} s per call")
+    metric("run_check_14_days_s", round(per_check, 3))

@@ -220,7 +220,7 @@ def test_forecast_horizon_is_the_next_hours_in_order():
 
 
 @pytest.mark.brief("ML-001", "ML-015", "ML-020", "SMOKE-003")
-def test_real_model_loads_and_beats_simple_baselines_on_unseen_homes():
+def test_real_model_loads_and_beats_simple_baselines_on_unseen_homes(metric):
     """Real model: fresh homes (seeds never used in training), next-hour error vs two baselines."""
     fc, meta = _real()
     assert sim_schema_problem(fc) is None
@@ -231,7 +231,11 @@ def test_real_model_loads_and_beats_simple_baselines_on_unseen_homes():
     mae = M._mae(y, pred)
     persistence = M._mae(y, X["lag_0"])
     same_hour = M._mae(y, X["same_hour_mean7"])
-    print(f"unseen homes: model MAE {mae:.4f}, persistence {persistence:.4f}, same-hour mean {same_hour:.4f}")
+    rmse = float(np.sqrt(np.mean((np.asarray(y) - pred) ** 2)))
+    metric("unseen_homes", {"homes": "seeds 7000-7003, 30 days each", "hours": int(len(y)),
+                            "model": meta.get("model"), "mae_kw": round(mae, 4), "rmse_kw": round(rmse, 4),
+                            "r2": round(M._r2(y, pred), 4), "persistence_mae_kw": round(persistence, 4),
+                            "same_hour_mean7_mae_kw": round(same_hour, 4)})
     assert mae < min(persistence, same_hour)
     assert mae < 0.2                                    # report: 0.108 kWh/h on 30 test homes
 
@@ -258,12 +262,16 @@ def _prefs(**kw):
 
 
 @pytest.mark.brief("OPT-001", "OPT-009", "OPT-018", "OPT-019")
-def test_plan_completes_every_move_is_feasible_and_figures_add_up(home):
+def test_plan_completes_every_move_is_feasible_and_figures_add_up(home, metric):
     pred, sessions = home
     result = recommend(pred, sessions, Tariff(), _prefs())
     v = validate_plan(pred, sessions, result["suggestions"], Tariff(), _prefs())
     assert v["all_constraints_ok"] and all(c["ok"] for c in v["checks"])
     assert v["savings_label"] == "estimate"
+    metric("plan_seed7_28d", {k: v[k] for k in ("baseline", "optimised", "energy_saving_kwh_month",
+                                                "energy_saving_pct", "cost_saving_month", "cost_saving_pct",
+                                                "peak_change_kw", "all_constraints_ok", "load_cap_violations")}
+           | {"moves_checked": len(v["checks"]), "suggestions": len(result["suggestions"])})
     assert v["energy_saving_kwh_month"] == pytest.approx(v["baseline"]["kwh_month"] - v["optimised"]["kwh_month"], abs=0.02)
     assert v["cost_saving_month"] == pytest.approx(v["baseline"]["cost_month"] - v["optimised"]["cost_month"], abs=0.02)
     for s in result["suggestions"]:
@@ -346,12 +354,12 @@ def test_same_inputs_give_the_same_plan(home):
 
 
 @pytest.mark.brief("OPT-017")
-def test_planning_a_month_stays_within_a_time_limit(home):
+def test_planning_a_month_stays_within_a_time_limit(home, metric):
     pred, sessions = home
     t0 = time.perf_counter()
     recommend(pred, sessions, Tariff(), _prefs())
     took = time.perf_counter() - t0
-    print(f"recommend() on 28 days of minute data: {took:.2f} s")
+    metric("recommend_28_days_s", round(took, 3))
     assert took < 20.0
 
 
