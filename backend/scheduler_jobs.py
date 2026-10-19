@@ -237,7 +237,7 @@ def check_meter_usage(db=None, service=None, fc=None) -> Dict[str, int]:
     import monitoring
     from clock import DEFAULT_TZ, valid
     from forecast import Forecaster
-    from meter_source import SCENARIOS, detected_history, owned_appliances, with_habits
+    from meter_source import SCENARIOS, detected_history, meter_context, owned_appliances, with_habits
 
     if db is None:
         from db import get_db

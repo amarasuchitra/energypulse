@@ -74,3 +74,4 @@ data/live_meter.csv
 
 # Appliance photos are personal data, kept encrypted on the server only
 data/photos/
+tests/reports/

@@ -17,4 +17,5 @@ FRONTEND_DIR = os.path.join(ROOT, "frontend")
 DATA_DIR = os.path.join(ROOT, "data")
 MODEL_DIR = os.path.join(ROOT, "models")
 DOCS_DIR = os.path.join(ROOT, "docs")
-DB_PATH = os.path.join(ROOT, "energypulse.db")
+# ENERGYPULSE_DB points the app (or a test run) at another database file.
+DB_PATH = os.environ.get("ENERGYPULSE_DB") or os.path.join(ROOT, "energypulse.db")

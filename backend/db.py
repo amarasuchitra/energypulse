@@ -260,7 +260,7 @@ class DatabaseManager:
                 if "household_id" in cols:
                     cursor.execute(f'DELETE FROM "{table}" WHERE household_id = ?', (household_id,))
                     deleted += max(cursor.rowcount, 0)
-            for table in ("credentials", "login_tokens"):
+            for table in ("credentials", "login_tokens", "login_throttle", "password_resets"):
                 if email and table in tables:
                     cursor.execute(f'DELETE FROM "{table}" WHERE email = ?', (email,))
                     deleted += max(cursor.rowcount, 0)
@@ -330,15 +330,18 @@ class DatabaseManager:
                            (household_id, key, json.dumps(value)))
 
     # ────────────── HOME SETUP (so a returning user lands on their own home) ─────
-    def save_home_details(self, household_id: str, details: Dict[str, Any]) -> List[str]:
+    def save_home_details(self, household_id: str, details: Dict[str, Any], strict: bool = False) -> List[str]:
         """
         Store this household's setup (validated first; see home_config.py).
         Returns the problems that were corrected; raises InvalidSetup if unusable.
+        With strict=True (the appliance editor) any problem means nothing is saved.
         """
-        from home_config import validate_home_details
+        from home_config import InvalidSetup, validate_home_details
         if not household_id:
             raise ValueError("No household to save the setup for.")
         details, problems = validate_home_details(details)
+        if strict and problems:
+            raise InvalidSetup(" ".join(problems))
         with self.get_connection() as conn:
             conn.cursor().execute("""
                 INSERT INTO household_homes (household_id, details_json, updated_at)
@@ -460,10 +463,18 @@ class DatabaseManager:
         email = (email or "").strip().lower()
         name = (name or "") or email.split("@")[0]
         household_id = hashlib.md5(email.encode()).hexdigest()
+        # Passwords live in auth.Accounts (credentials table).  This legacy table must never
+        # hold a guessable password, so it gets a random, unusable one.
         salt = secrets.token_bytes(16)
-        password_hash = self._hash_password((email + household_id), salt, self.PBKDF2_ALGO, self.PBKDF2_ROUNDS)
+        password_hash = self._hash_password(secrets.token_hex(32), salt, self.PBKDF2_ALGO, self.PBKDF2_ROUNDS)
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            row = cursor.execute("SELECT password_hash, salt FROM users WHERE email = ?", (email,)).fetchone()
+            if row is not None and row["password_hash"] == self._hash_password(
+                    email + household_id, bytes.fromhex(row["salt"]), self.PBKDF2_ALGO, self.PBKDF2_ROUNDS):
+                # Rows written by older versions used email + household id: replace it.
+                cursor.execute("UPDATE users SET password_hash = ?, salt = ? WHERE email = ?",
+                               (password_hash, salt.hex(), email))
             cursor.execute("""
                 INSERT INTO users
                 (email, name, password_hash, salt, household_id, is_guest, preferred_language)

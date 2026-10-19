@@ -12,7 +12,13 @@ Rules
    email does not give access to their household.
    A new password must be strong: 10+ characters with upper and lower case,
    a digit and a symbol, and not a common password or the email name.
-3. Five wrong passwords lock the account for five minutes.
+3. Five wrong passwords for an email lock it for five minutes.  The count is
+   kept for unknown emails too, so the lock message never reveals whether an
+   account exists.
+7. Forgotten password: a one-time 8-character code is emailed.  Only its hash
+   is stored; it expires after 30 minutes, works once, allows 5 wrong tries,
+   and at most 3 codes an hour can be requested per email.  A successful
+   reset signs the account out on every browser.
 4. Every page reads data by the household id of the SIGNED-IN account.  The
    id comes from the session, never from anything typed into a form.
 5. Each guest gets a private, throwaway household, so guests cannot see one
@@ -39,13 +45,23 @@ ROUNDS = 310_000
 MIN_PASSWORD = 10
 MAX_FAILURES = 5
 LOCK_SECONDS = 300
+RESET_SECONDS = 30 * 60
+RESET_MAX_TRIES = 5
+RESET_PER_HOUR = 3
+RESET_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"     # no 0/O or 1/I to misread
+RESET_CODE_LEN = 8
+MAX_NAME = 80
+MAX_EMAIL = 254
+MAX_PASSWORD = 256
+TERMS_VERSION = "2026-10"
 SESSION_SECONDS = 8 * 3600
 # "Keep me signed in": a random token in a browser cookie, stored here only as
 # a SHA-256 hash, valid for 30 days and revoked on log-out.
 REMEMBER_DAYS = 30
 REMEMBER_SECONDS = REMEMBER_DAYS * 24 * 3600
 COOKIE_NAME = "ep_session"
-_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# Plain ASCII addresses: letters, digits and . _ % + - before the @, a dotted domain after.
+_EMAIL = re.compile(r"^[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$")
 GUEST_DOMAIN = "guest.energypulse.local"
 
 
@@ -86,6 +102,51 @@ def password_problems(password: str, email: str = "") -> list:
     return [label for key, label in PASSWORD_RULES if not checks[key]]
 
 
+_CONTROL = re.compile(r"[\x00-\x1f\x7f<>]")
+
+
+def clean_name(name: str) -> str:
+    """A display name with control characters and angle brackets removed, trimmed to 80 characters."""
+    return re.sub(r"\s+", " ", _CONTROL.sub("", name or "")).strip()[:MAX_NAME]
+
+
+def validate_signup_form(name: str, email: str, password: str, confirm: str, accepted_terms: bool) -> list:
+    """
+    Everything wrong with a sign-up form, in plain language (empty list = OK to submit).
+    Checked before any account is created; Accounts.sign_up checks email and password again.
+    """
+    problems = []
+    if not clean_name(name):
+        problems.append("Enter your full name.")
+    em = (email or "").strip().lower()
+    if not em:
+        problems.append("Enter your email address.")
+    elif len(em) > MAX_EMAIL or not _EMAIL.match(em) or em.endswith("@" + GUEST_DOMAIN):
+        problems.append("Enter a valid email address.")
+    if not password:
+        problems.append("Choose a password.")
+    else:
+        if len(password) > MAX_PASSWORD:
+            problems.append(f"The password can be at most {MAX_PASSWORD} characters.")
+        missing = password_problems(password, em)
+        if missing:
+            problems.append("Choose a stronger password. Still needed: " + "; ".join(missing) + ".")
+        if password != (confirm or ""):
+            problems.append("The two passwords do not match. Type the same password in both boxes.")
+    if not accepted_terms:
+        problems.append("Accept the Terms of Use and Privacy Policy to create an account.")
+    return problems
+
+
+def validate_login_form(email: str, password: str) -> list:
+    problems = []
+    if not (email or "").strip():
+        problems.append("Enter your email address.")
+    if not password:
+        problems.append("Enter your password.")
+    return problems
+
+
 def _hash(password: str, salt: bytes) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode(), salt, ROUNDS).hex()
 
@@ -111,6 +172,24 @@ class Accounts:
                     created_at REAL NOT NULL,
                     expires_at REAL NOT NULL
                 )""")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS login_throttle (
+                    email TEXT PRIMARY KEY,
+                    failures INTEGER NOT NULL DEFAULT 0,
+                    locked_until REAL NOT NULL DEFAULT 0
+                )""")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS password_resets (
+                    code_hash TEXT PRIMARY KEY,
+                    email TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    tries INTEGER NOT NULL DEFAULT 0,
+                    used INTEGER NOT NULL DEFAULT 0
+                )""")
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(credentials)")}
+            if "terms_accepted" not in cols:
+                conn.execute("ALTER TABLE credentials ADD COLUMN terms_accepted TEXT")
 
     @contextmanager
     def _conn(self):
@@ -131,45 +210,117 @@ class Accounts:
             return conn.execute("SELECT 1 FROM credentials WHERE email = ?",
                                 (self.normalise(email),)).fetchone() is not None
 
-    def sign_up(self, email: str, password: str, name: str = "") -> Tuple[bool, str]:
+    def sign_up(self, email: str, password: str, name: str = "",
+                terms_version: Optional[str] = None) -> Tuple[bool, str]:
         email = self.normalise(email)
-        if not _EMAIL.match(email) or email.endswith("@" + GUEST_DOMAIN):
+        if len(email) > MAX_EMAIL or not _EMAIL.match(email) or email.endswith("@" + GUEST_DOMAIN):
             return False, "Enter a valid email address."
+        if not isinstance(password, str) or len(password) > MAX_PASSWORD:
+            return False, f"The password can be at most {MAX_PASSWORD} characters."
         problems = password_problems(password, email)
         if problems:
             return False, "Choose a stronger password. Still needed: " + "; ".join(problems) + "."
         if self.exists(email):
             return False, "An account with this email already exists. Sign in instead."
         salt = secrets.token_bytes(16)
-        display = (name or "").strip()[:80] or email.split("@")[0]
-        with self._conn() as conn:
-            conn.execute("INSERT INTO credentials (email, salt, password_hash, name) VALUES (?, ?, ?, ?)",
-                         (email, salt.hex(), _hash(password, salt), display))
+        display = clean_name(name) or email.split("@")[0]
+        try:
+            with self._conn() as conn:
+                conn.execute("INSERT INTO credentials (email, salt, password_hash, name, terms_accepted) "
+                             "VALUES (?, ?, ?, ?, ?)",
+                             (email, salt.hex(), _hash(password, salt), display, terms_version))
+        except sqlite3.IntegrityError:                    # a second request for the same email won the race
+            return False, "An account with this email already exists. Sign in instead."
         return True, display
 
     def sign_in(self, email: str, password: str, now: Optional[float] = None) -> Tuple[bool, str]:
-        """(True, display name) or (False, reason).  The reason never says which part was wrong."""
-        email = self.normalise(email)
+        """(True, display name) or (False, reason).  The reason never says which part was wrong,
+        and never whether the email has an account."""
+        email = self.normalise(email)[:MAX_EMAIL]
         now = time.time() if now is None else now
+        if not isinstance(password, str) or len(password) > MAX_PASSWORD:
+            password = ""
         with self._conn() as conn:
+            th = conn.execute("SELECT failures, locked_until FROM login_throttle WHERE email = ?",
+                              (email,)).fetchone()
+            if th is not None and th["locked_until"] > now:
+                minutes = int((th["locked_until"] - now) // 60) + 1
+                return False, f"Too many wrong attempts. Try again in about {minutes} minute(s)."
             row = conn.execute("SELECT * FROM credentials WHERE email = ?", (email,)).fetchone()
             if row is None:
                 _hash(password or "", b"0" * 16)          # same work whether or not the account exists
-                return False, "The email or password is not right."
-            if row["locked_until"] > now:
-                minutes = int((row["locked_until"] - now) // 60) + 1
-                return False, f"Too many wrong attempts. Try again in about {minutes} minute(s)."
-            good = hmac.compare_digest(row["password_hash"],
-                                       _hash(password or "", bytes.fromhex(row["salt"])))
+                good = False
+            else:
+                good = hmac.compare_digest(row["password_hash"],
+                                           _hash(password or "", bytes.fromhex(row["salt"])))
             if good:
-                conn.execute("UPDATE credentials SET failures = 0, locked_until = 0 WHERE email = ?", (email,))
+                conn.execute("DELETE FROM login_throttle WHERE email = ?", (email,))
                 return True, row["name"]
-            failures = row["failures"] + 1
+            failures = (th["failures"] if th is not None else 0) + 1
             locked = now + LOCK_SECONDS if failures >= MAX_FAILURES else 0
-            conn.execute("UPDATE credentials SET failures = ?, locked_until = ? WHERE email = ?",
-                         (0 if locked else failures, locked, email))
+            conn.execute("""INSERT INTO login_throttle (email, failures, locked_until) VALUES (?, ?, ?)
+                            ON CONFLICT(email) DO UPDATE SET failures = excluded.failures,
+                                                             locked_until = excluded.locked_until""",
+                         (email, 0 if locked else failures, locked))
             return False, "The email or password is not right."
 
+    # ------------------------------------------------------- forgotten password
+    @staticmethod
+    def _code_hash(email: str, code: str) -> str:
+        return hashlib.sha256(("reset|" + email + "|" + (code or "").strip().upper()).encode()).hexdigest()
+
+    def request_reset(self, email: str, now: Optional[float] = None) -> Optional[str]:
+        """
+        A new one-time reset code for this account, to be emailed; None when the email has
+        no account or too many codes were asked for in the last hour.  The caller shows the
+        same message either way.
+        """
+        email = self.normalise(email)
+        now = time.time() if now is None else now
+        if not _EMAIL.match(email) or not self.exists(email):
+            return None
+        with self._conn() as conn:
+            conn.execute("DELETE FROM password_resets WHERE expires_at < ?", (now - 3600,))
+            recent = conn.execute("SELECT COUNT(*) FROM password_resets WHERE email = ? AND created_at > ?",
+                                  (email, now - 3600)).fetchone()[0]
+            if recent >= RESET_PER_HOUR:
+                return None
+            conn.execute("UPDATE password_resets SET used = 1 WHERE email = ?", (email,))   # older codes stop working
+            code = "".join(secrets.choice(RESET_ALPHABET) for _ in range(RESET_CODE_LEN))
+            conn.execute("INSERT INTO password_resets (code_hash, email, created_at, expires_at) VALUES (?, ?, ?, ?)",
+                         (self._code_hash(email, code), email, now, now + RESET_SECONDS))
+        return code
+
+    def reset_password(self, email: str, code: str, new_password: str,
+                       now: Optional[float] = None) -> Tuple[bool, str]:
+        """Set a new password with a valid code.  Every failure gives the same answer about the code."""
+        email = self.normalise(email)
+        now = time.time() if now is None else now
+        bad = (False, "That code is not valid or has expired. Ask for a new one.")
+        if not code or len(code) > 40:
+            return bad
+        if not isinstance(new_password, str) or len(new_password) > MAX_PASSWORD:
+            return False, f"The password can be at most {MAX_PASSWORD} characters."
+        problems = password_problems(new_password, email)
+        if problems:
+            return False, "Choose a stronger password. Still needed: " + "; ".join(problems) + "."
+        with self._conn() as conn:
+            live = conn.execute("SELECT * FROM password_resets WHERE email = ? AND used = 0 AND expires_at >= ? "
+                                "ORDER BY created_at DESC LIMIT 1", (email, now)).fetchone()
+            if live is None:
+                return bad
+            if not hmac.compare_digest(live["code_hash"], self._code_hash(email, code)):
+                tries = live["tries"] + 1
+                conn.execute("UPDATE password_resets SET tries = ?, used = ? WHERE code_hash = ?",
+                             (tries, 1 if tries >= RESET_MAX_TRIES else 0, live["code_hash"]))
+                return bad
+            salt = secrets.token_bytes(16)
+            conn.execute("UPDATE credentials SET salt = ?, password_hash = ? WHERE email = ?",
+                         (salt.hex(), _hash(new_password, salt), email))
+            conn.execute("UPDATE password_resets SET used = 1 WHERE email = ?", (email,))
+            conn.execute("DELETE FROM login_tokens WHERE email = ?", (email,))      # signed out everywhere
+            conn.execute("DELETE FROM login_throttle WHERE email = ?", (email,))
+        return True, "Your password has been changed. Sign in with the new password."
 
     # ------------------------------------------------------- remember-me tokens
     @staticmethod

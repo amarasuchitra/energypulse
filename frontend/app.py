@@ -63,7 +63,8 @@ from appliance_ui import (
 from meter_source import owned_appliances, SOURCE_NOTE, detected_history, today_str
 from appliance_ui import meter_settings
 from auth import (Accounts, PASSWORD_RULES, new_guest_email, is_guest_email, session_expired,
-                  COOKIE_NAME, REMEMBER_SECONDS)
+                  COOKIE_NAME, REMEMBER_SECONDS, RESET_SECONDS, TERMS_VERSION,
+                  validate_signup_form, validate_login_form)
 from motion import notify, runtime as motion_runtime, skeleton
 from integrity import Ledger, store_bill_file, read_bill_file, bill_path, sign_report, verify_report
 from home_ui import render_home_tab, _members as household_people
@@ -988,6 +989,73 @@ def confirm_sign_out():
         st.rerun()
 
 
+TERMS_TEXT = """
+**Terms of Use.** EnergyPulse gives estimates from a simulated meter and from data you upload. Forecasts,
+savings and alerts are estimates, not measurements or billing figures, and are offered without warranty.
+Keep your password private; you are responsible for what is done with your account.
+
+**Privacy Policy.** We store your name, email, a salted hash of your password (never the password itself),
+your home and appliance setup, uploaded bills (encrypted on disk) and the alerts we send you. Your data is used
+only to run EnergyPulse for your household and is not sold or shared. Email is sent only to people you add to
+your household. You can delete a guest home by logging out; ask the administrator to delete an account.
+"""
+
+
+def render_reset_form(auth: dict) -> None:
+    """Forgotten password: email a one-time code, then set a new password with it."""
+    st.markdown("**Reset your password**")
+    st.caption("We email a one-time code to the address you signed up with. It expires in "
+               f"{RESET_SECONDS // 60} minutes.")
+    with st.form("reset_request"):
+        email = st.text_input("Email address", key="reset_email", max_chars=254)
+        if st.form_submit_button("Email me a code", width="stretch"):
+            if not email.strip():
+                st.error("Enter your email address.")
+            else:
+                try:
+                    with st.spinner("Sending..."):
+                        service = get_notification_service()
+                        if not service.email_configured():
+                            st.error("Password reset needs email, which is not set up on this server. "
+                                     "Ask the administrator to reset your password.")
+                        else:
+                            code = get_accounts().request_reset(email)
+                            if code:
+                                service.send_reset_code(Accounts.normalise(email), code, RESET_SECONDS // 60)
+                            # Same answer whether or not the email has an account.
+                            st.success("If that email has an account, a code is on its way. "
+                                       "Check your inbox (and spam folder).")
+                            auth["reset_email"] = Accounts.normalise(email)
+                except Exception as exc:
+                    log.error("Password reset request failed: %s", type(exc).__name__)
+                    st.error("Password reset is not available just now. Please try again later.")
+    with st.form("reset_confirm"):
+        email2 = st.text_input("Email address", value=auth.get("reset_email", ""), key="reset_email2", max_chars=254)
+        code = st.text_input("Code from the email", key="reset_code", max_chars=20)
+        pw = st.text_input("New password", type="password", key="reset_pw", max_chars=256)
+        pw2 = st.text_input("Confirm new password", type="password", key="reset_pw2", max_chars=256)
+        if st.form_submit_button("Set new password", type="primary", width="stretch"):
+            if not (email2.strip() and code.strip() and pw):
+                st.error("Fill in the email, the code and the new password.")
+            elif pw != pw2:
+                st.error("The two passwords do not match. Type the same password in both boxes.")
+            else:
+                try:
+                    ok, msg = get_accounts().reset_password(email2, code, pw)
+                except Exception as exc:
+                    log.error("Password reset failed: %s", type(exc).__name__)
+                    ok, msg = False, "Password reset is not available just now. Please try again later."
+                if ok:
+                    auth["mode"] = "login"
+                    auth.pop("reset_email", None)
+                    notify("success", msg)
+                    st.rerun()
+                st.error(msg)
+    if st.button("Back to sign in", key="reset_back", width="stretch"):
+        auth["mode"] = "login"
+        st.rerun()
+
+
 def render_login_screen():
     if "auth" not in st.session_state:
         st.session_state.auth = {"logged_in": False, "email": None, "mode": "login"}
@@ -1012,46 +1080,66 @@ def render_login_screen():
       with st.container(key="login_panel"):
         st.markdown(f'<div class="ep-form-title">{title}</div>'
                     f'<div class="ep-form-sub">{subtitle}</div>', unsafe_allow_html=True)
+        if mode == "reset":
+            render_reset_form(auth)
+            return False
         with st.form("login_form", clear_on_submit=False):
-            email = st.text_input(T("email_label"), placeholder=T("ph_email"), key="login_email")
+            if is_signup:
+                name = st.text_input("Full name", placeholder=T("ph_name"), key="login_name", max_chars=80)
+            email = st.text_input(T("email_label"), placeholder=T("ph_email"), key="login_email", max_chars=254)
+            # Streamlit's password box has its own show/hide (eye) button.
             password = st.text_input(T("password_label"), type="password",
-                                     placeholder=T("ph_password"), key="login_pw")
+                                     placeholder=T("ph_password"), key="login_pw", max_chars=256)
             if is_signup:
                 confirm = st.text_input("Confirm password", type="password",
-                                        placeholder="Type the password again", key="login_pw2")
+                                        placeholder="Type the password again", key="login_pw2", max_chars=256)
                 st.markdown(
                     "<div class='ep-pw-rules'><b>Your password must have</b><ul>"
                     + "".join(f"<li>{label}</li>" for _, label in PASSWORD_RULES)
                     + "</ul></div>", unsafe_allow_html=True)
-                name = st.text_input(T("name_label"), placeholder=T("ph_name"), key="login_name")
+                terms = st.checkbox("I accept the Terms of Use and Privacy Policy", key="login_terms")
             remember = st.checkbox(T("remember_me"), value=True, key="login_remember")
             btn_label = T("btn_create_account") if is_signup else T("btn_sign_in")
             submitted = st.form_submit_button(btn_label, width="stretch", type="primary")
             if submitted:
-                if not email or not password:
-                    st.error(T("err_missing"))
-                elif is_signup and password != confirm:
-                    st.error("The two passwords do not match. Type the same password in both boxes.")
-                else:
-                    accounts = get_accounts()
-                    ok, result = (accounts.sign_up(email, password, name) if is_signup
-                                  else accounts.sign_in(email, password))
-                    if not ok:
-                        st.error(result)
-                        return False
-                    email = accounts.normalise(email)
-                    auth.update({"logged_in": True, "email": email, "name": result,
-                                 "guest": False, "signed_in_at": time.time(), "remember": False})
-                    if remember:
-                        token = accounts.issue_token(email)
-                        auth.update({"remember": True, "token": token})
-                        st.session_state["_set_cookie"] = token
-                    household = ensure_login(email, name=result)
-                    saved_home = None if is_signup else get_db().get_home_details(household)
-                    if saved_home:
-                        st.session_state.home_details = saved_home      # straight to their own home
-                    notify("success", f"Account created. Welcome, {result}." if is_signup else f"Signed in as {result}.")
-                    st.rerun()
+                problems = (validate_signup_form(name, email, password, confirm, terms) if is_signup
+                            else validate_login_form(email, password))
+                if problems:
+                    for p in problems:
+                        st.error(p)
+                    return False
+                try:
+                    with st.spinner("Creating your account..." if is_signup else "Signing in..."):
+                        accounts = get_accounts()
+                        ok, result = (accounts.sign_up(email, password, name, terms_version=TERMS_VERSION)
+                                      if is_signup else accounts.sign_in(email, password))
+                except Exception as exc:
+                    log.error("Sign-in service failed: %s", type(exc).__name__)
+                    st.error("Signing in is not available just now. Please try again in a minute.")
+                    return False
+                if not ok:
+                    st.error(result)
+                    return False
+                email = accounts.normalise(email)
+                auth.update({"logged_in": True, "email": email, "name": result,
+                             "guest": False, "signed_in_at": time.time(), "remember": False})
+                if remember:
+                    token = accounts.issue_token(email)
+                    auth.update({"remember": True, "token": token})
+                    st.session_state["_set_cookie"] = token
+                household = ensure_login(email, name=result)
+                saved_home = None if is_signup else get_db().get_home_details(household)
+                if saved_home:
+                    st.session_state.home_details = saved_home      # straight to their own home
+                notify("success", f"Account created. Welcome, {result}." if is_signup else f"Signed in as {result}.")
+                st.rerun()
+        if is_signup:
+            with st.expander("Terms of Use and Privacy Policy"):
+                st.markdown(TERMS_TEXT)
+        else:
+            if st.button("Forgot password?", key="forgot_pw", type="tertiary"):
+                auth["mode"] = "reset"
+                st.rerun()
 
         st.markdown(f'<div class="login-divider">{T("divider_or")}</div>', unsafe_allow_html=True)
         if is_signup:
@@ -1433,13 +1521,19 @@ def _render_onboard_step3_new(od):
             try:
                 get_db().save_home_details(current_household_id(), st.session_state.home_details)
                 get_db().mark_onboarding_completed(current_household_id())
+                saved = True
             except Exception:
-                pass
+                log.exception("Saving the home setup failed")
+                saved = False
             st.session_state.pop("home_state", None)
             for k in ["onboard_data", "onboard_step"]:
                 if k in st.session_state:
                     del st.session_state[k]
-            notify("success", "Home saved. Every appliance you listed is now in the 3D home.")
+            if saved:
+                notify("success", "Home saved. Every appliance you listed is now in the 3D home.")
+            else:
+                notify("warning", "Your home could not be saved just now. It works for this visit; "
+                                  "save it again from Edit appliances so it is remembered.")
             st.rerun()
 
 
@@ -1537,8 +1631,9 @@ def _render_onboard_step2(od):
         t = catalog.get_type(item.get("type_key", ""))
         with st.container(border=True):
             cols = st.columns([1.6, 1.6, 0.9], vertical_alignment="center")
-            cols[0].markdown(f'<div class="ep-row-name">{item["name"]}</div>'
-                             f'<div class="ep-row-kind">{item.get("type", "")}</div>', unsafe_allow_html=True)
+            cols[0].markdown(f'<div class="ep-row-name">{html.escape(str(item["name"]))}</div>'
+                             f'<div class="ep-row-kind">{html.escape(str(item.get("type", "")))}</div>',
+                             unsafe_allow_html=True)
             item["usage"] = cols[1].select_slider(T("typical_usage"), options=["Low", "Medium", "High"],
                                                   value=item.get("usage", "Medium"), key=f"app_usage_{i}",
                                                   label_visibility="collapsed")
@@ -1617,13 +1712,19 @@ def _render_onboard_step3(od):
             }
             try:
                 get_db().save_home_details(current_household_id(), st.session_state.home_details)
+                saved = True
             except Exception:
-                pass            # the session copy still works; it is just not remembered
+                log.exception("Saving the home setup failed")
+                saved = False   # the session copy still works; it is just not remembered
             st.session_state.pop("home_state", None)        # rebuild the 3D home from the new list
             for k in ["onboard_data", "onboard_step"]:
                 if k in st.session_state:
                     del st.session_state[k]
-            notify("success", "Home saved. Every appliance you listed is now in the 3D home.")
+            if saved:
+                notify("success", "Home saved. Every appliance you listed is now in the 3D home.")
+            else:
+                notify("warning", "Your home could not be saved just now. It works for this visit; "
+                                  "save it again from Edit appliances so it is remembered.")
             st.rerun()
 
 
@@ -1726,6 +1827,33 @@ def _meter_now_ts(date) -> pd.Timestamp:
     return pd.Timestamp(date) + pd.Timedelta(minutes=now_minute())
 
 
+def render_freshness(date, upcoming, monitor):
+    """When each stage of the live pipeline last ran, with a warning for any that is out of date."""
+    from readings import freshness
+    now = _meter_now_ts(date)
+    brief_date = (st.session_state.get("_brief_mark") or (None, None))[1]
+    stamps = {
+        "measurement": now.floor("min"),
+        "prediction": now.floor("h") if upcoming is not None and not upcoming.empty else None,
+        "optimization": pd.Timestamp(brief_date) if brief_date else None,
+        "alert_check": (monitor or {}).get("checked_at"),
+    }
+    f = freshness(stamps, now)
+    labels = {"measurement": "Reading", "prediction": "Forecast", "optimization": "Savings plan",
+              "alert_check": "Alert check"}
+    parts = []
+    for key, label in labels.items():
+        at = f[key]["at"]
+        parts.append(f"{label}: " + (f"{at:%d %b %H:%M}" if at is not None else "not yet")
+                     + (" (out of date)" if f[key]["stale"] and at is not None else ""))
+    st.caption("Last updated · " + " · ".join(parts))
+    stale = [labels[k] for k, v in f.items() if v["stale"] and v["at"] is not None]
+    if stale:
+        st.warning(", ".join(stale) + " is out of date. The figures shown are from the time given above.")
+    if (monitor or {}).get("error"):
+        st.warning("The alert check could not run this hour; it will try again. The dashboard is otherwise unaffected.")
+
+
 def run_meter_monitoring(household_id, owned, people, scenario, date):
     """Log the meter forecasts, record finished hours and check for overconsumption (once per hour)."""
     hour = now_minute() // 60
@@ -1782,8 +1910,9 @@ def render_now_section(tariff_rate, owned, household_id=None, people=None):
     scenario, tod = meter_settings()
     date = today_str()
     hour = now_minute() // 60
+    monitor = None
     if household_id:
-        run_meter_monitoring(household_id, tuple(owned), people or [], scenario, date)
+        monitor = run_meter_monitoring(household_id, tuple(owned), people or [], scenario, date)
         render_overuse_banner(household_id)
     try:
         upcoming = _meter_forecast_cached(date, scenario, tuple(owned), hour)
@@ -1822,14 +1951,21 @@ def render_now_section(tariff_rate, owned, household_id=None, people=None):
                     trend_dir="neutral" if change is None or abs(change) < 2 else ("up" if change > 0 else "down"))
 
     live_tile()
+    if upcoming.empty:
+        st.info("The next-hour forecast is not available right now"
+                + (f" ({load_forecaster().sim_error})." if getattr(load_forecaster(), "sim_error", None) else ".")
+                + " The live reading still updates; no forecast figure is shown rather than a made-up one.")
     if not upcoming.empty and fc_meta:
         comp = fc_meta.get("comparison", {})
+        model_name = {"lightgbm": "LightGBM", "xgboost": "XGBoost"}.get(fc_meta.get("model", "xgboost"), "machine-learning")
+        chosen = comp.get("chosen") or comp.get("xgboost") or {}
         st.caption(
-            f"Forecast by an XGBoost model trained on {fc_meta.get('homes', {}).get('train', 0)} simulated homes and tested on "
+            f"Forecast by a {model_name} model trained on {fc_meta.get('homes', {}).get('train', 0)} simulated homes and tested on "
             f"{fc_meta.get('homes', {}).get('test', 0)} others it never saw: average error "
-            f"{comp.get('xgboost', {}).get('mae_kw', 0):.2f} kWh per hour, "
-            f"{fc_meta.get('improvement_over_best_baseline_pct', 0):.0f}% lower than the usual-for-this-hour average. "
-            "Updated every hour; the live tile every second.")
+            f"{chosen.get('mae_kw', 0):.2f} kWh per hour, "
+            f"{fc_meta.get('improvement_over_best_baseline_pct', 0):.0f}% lower than the best simple baseline. "
+            "The live tile refreshes every second; the forecast and the alert check run once an hour.")
+    render_freshness(date, upcoming, monitor)
     st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
     @st.fragment(run_every=60)
@@ -2031,7 +2167,7 @@ def _appliances_for_compare(items) -> str:
     return json.dumps(clean, sort_keys=True, default=str)
 
 
-def _render_appliances_editor(hd: dict, lang: str) -> None:
+def _render_appliances_editor(hd: dict, lang: str, closable: bool = False) -> None:
     """
     Edit the household's appliances: add, remove, quantity, hours a day, usage.
     Changes go into a draft; "Save changes" validates and writes them to the
@@ -2054,7 +2190,8 @@ def _render_appliances_editor(hd: dict, lang: str) -> None:
     for i, item in enumerate(list(draft)):
         spec = catalog.effective_specs(item)
         summary = f"{spec['label']} · {spec['rated_w']:.0f} W" if spec else item.get("type", "Unknown")
-        st.markdown(f"**{item['name']}**  \n<small>{summary}</small>", unsafe_allow_html=True)
+        st.markdown(f"**{html.escape(item['name'])}**  \n<small>{html.escape(str(summary))}</small>",
+                    unsafe_allow_html=True)
         c1, c2, c3, c4 = st.columns([1.1, 1.3, 1.6, 0.7])
         item["quantity"] = int(c1.number_input("How many", 1, 10, int(item.get("quantity", 1) or 1), 1,
                                                key=f"ap_qty_{household_id}_{ver}_{i}"))
@@ -2100,6 +2237,11 @@ def _render_appliances_editor(hd: dict, lang: str) -> None:
     save_col, cancel_col = st.columns(2)
     if save_col.button("Save changes", type="primary", key="ap_save", width="stretch", disabled=not changed):
         try:
+            # Appliance values are checked strictly: any problem means nothing is saved and the
+            # draft stays here to be fixed.  (Other home fields keep their usual correction.)
+            problems = validate_home_details({"appliances": draft})[1]
+            if problems:
+                raise InvalidSetup(" ".join(problems))
             clean, problems = validate_home_details({**hd, "appliances": draft})
             db.save_home_details(household_id, clean)
         except InvalidSetup as exc:
@@ -2111,7 +2253,7 @@ def _render_appliances_editor(hd: dict, lang: str) -> None:
             return
         hd["appliances"] = clean["appliances"]
         st.session_state.home_details = hd
-        for key in ("appl_draft", "home_state", "_warm"):
+        for key in ("appl_draft", "home_state", "_warm", "appl_edit_open"):
             st.session_state.pop(key, None)
         _reset_appliance_widgets()
         st.cache_data.clear()                 # predictions and tips are worked out again from the new list
@@ -2119,10 +2261,35 @@ def _render_appliances_editor(hd: dict, lang: str) -> None:
         notify("success", "Appliances saved. Forecasts and tips now use the new list."
                + (" Corrected: " + "; ".join(problems) if problems else ""))
         st.rerun()
-    if cancel_col.button("Cancel", key="ap_cancel", width="stretch", disabled=not changed):
+    if cancel_col.button("Cancel", key="ap_cancel", width="stretch", disabled=not (changed or closable)):
         st.session_state.pop("appl_draft", None)
+        st.session_state.pop("appl_edit_open", None)
         _reset_appliance_widgets()
         st.rerun()
+
+
+def render_dashboard_appliances(hd: dict) -> None:
+    """The saved appliance list on the Dashboard, with an Edit appliances button beside its heading."""
+    items = [a for a in (hd.get("appliances") or []) if isinstance(a, dict)]
+    with st.container(border=True, key="dash_appliances"):
+        head_col, btn_col = st.columns([4, 1.3], vertical_alignment="center")
+        with head_col:
+            section(f"Your appliances ({len(items)})")
+        editing = bool(st.session_state.get("appl_edit_open"))
+        if not editing and btn_col.button("Edit appliances", key="dash_edit_appliances", width="stretch",
+                                          icon=":material/edit:"):
+            st.session_state["appl_edit_open"] = True
+            st.session_state.pop("appl_draft", None)
+            _reset_appliance_widgets()
+            st.rerun()
+        if editing:
+            _render_appliances_editor(hd, st.session_state.get("lang", "en"), closable=True)
+        elif items:
+            st.caption(" · ".join(
+                f"{a.get('name', 'Appliance')}" + (f" ×{int(a.get('quantity', 1))}" if int(a.get('quantity', 1) or 1) > 1 else "")
+                for a in items))
+        else:
+            st.caption("No appliances saved yet. Use Edit appliances to add the ones in your home.")
 
 
 def ensemble_setting() -> dict:
@@ -3048,6 +3215,7 @@ def _main_dashboard_inner():
                     notify("warning", text + ". See the Safety page.")
             except Exception:
                 pass
+        render_dashboard_appliances(home_details)
         render_home_tab(tariff_rate, home_details, db=get_db(), household_id=household_id,
                         user_name=st.session_state.auth.get("name") or T("guest_name"),
                         user_email=auth_email, theme=current_theme(),
@@ -3212,7 +3380,9 @@ def _main_dashboard_inner():
 
 def main():
     # Initialize background scheduler once per process
-    if "scheduler_initialized" not in st.session_state:
+    # ENERGYPULSE_NO_SCHEDULER=1 (automated tests) runs the app without background jobs.
+    if "scheduler_initialized" not in st.session_state and \
+            os.environ.get("ENERGYPULSE_NO_SCHEDULER", "").strip().lower() not in ("1", "true", "yes"):
         try:
             from scheduler_jobs import init_scheduler
             init_scheduler()

@@ -9,7 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     
     steps:
       - name: Checkout code
@@ -30,44 +30,37 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install --timeout 300 --retries 3 -r requirements.txt
-          pip install pytest
-      
-      - name: Run prediction pipeline tests
-        run: |
-          python -m pytest tests/test_prediction_pipeline.py -v
-      
-      - name: Run new features tests
-        run: |
-          python -m pytest tests/test_new_features.py -v --tb=short
-      
-      - name: Run CSV import tests
-        run: |
-          python -m pytest tests/test_csv_import.py -v --tb=short
-      
-      - name: Run toolkit tests
-        run: |
-          python -m pytest tests/test_toolkit.py -v --tb=short
-      
-      - name: Run all other tests
-        run: |
-          python -m pytest tests/test_appliance_intelligence.py tests/test_chatbot_routing.py tests/test_notifications.py -v --tb=short
+          # Test-only tools: pytest runs the suite, pytest-cov measures line coverage.
+          pip install pytest pytest-cov
 
-      - name: Run scheduler, sign-in, meter API, ensemble and interval tests
-        run: |
-          python -m pytest tests/test_scheduler_jobs.py tests/test_remember_me.py tests/test_meter_api.py tests/test_ensemble.py tests/test_optimization.py -v --tb=short
-
-      - name: Run monitoring and appliance-setup tests
-        run: |
-          python -m pytest tests/test_monitoring.py tests/test_home_config.py tests/test_forecast_sim.py -v --tb=short
-      
-      - name: Check imports
-        run: |
-          python -c "import sys; sys.path[:0] = ['frontend', 'backend']; import app; print('App imports OK')"
-      
-      - name: Lint (basic)
+      - name: Lint (syntax)
         run: |
           python -m compileall -q frontend backend tests
           echo "Syntax check passed"
+
+      - name: Check imports
+        run: |
+          python -c "import sys; sys.path[:0] = ['frontend', 'backend']; import app; print('App imports OK')"
+
+      - name: Run the full test suite (with coverage)
+        id: tests
+        continue-on-error: true
+        env:
+          ENERGYPULSE_NO_SCHEDULER: "1"
+          ENERGYPULSE_DISABLE_LSTM: "1"
+        run: |
+          mkdir -p tests/reports
+          python -m pytest tests -q -rs --durations=20 \
+            --junitxml=tests/reports/junit.xml \
+            --cov=backend --cov=frontend --cov-report=term --cov-report=json:tests/reports/coverage.json
+
+      - name: Report results by brief test ID
+        if: always()
+        run: python tests/report_summary.py
+
+      - name: Fail if the tests failed
+        if: steps.tests.outcome != 'success'
+        run: exit 1
 
   docker:
     needs: test

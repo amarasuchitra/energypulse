@@ -37,6 +37,8 @@ def to_hourly(df: pd.DataFrame) -> pd.DataFrame:
     cols = [c for c in [TARGET] + MEASUREMENTS if c in df.columns]
     d = df[["datetime"] + cols].copy()
     d["datetime"] = pd.to_datetime(d["datetime"]).dt.floor("h")
+    for c in cols:              # text numbers become numbers; anything else, and infinities, become unknown
+        d[c] = pd.to_numeric(d[c], errors="coerce").replace([np.inf, -np.inf], np.nan)
     d = d.groupby("datetime", sort=True)[cols].mean()
     if d.empty:
         return d

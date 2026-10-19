@@ -520,6 +520,28 @@ def explain_refusal(appliance_key: str, action: str,
 
 
 # ----------------------------------------------------------------- plan check
+def estimated_savings(baseline_kwh: float, optimised_kwh: float,
+                      baseline_hours: float, optimised_hours: float) -> dict:
+    """
+    Estimated savings = baseline - optimised; percentage = savings / baseline x 100 when the
+    baseline is positive (otherwise None, never a made-up 0% or infinity).  Both figures must
+    cover the same span of time, or the comparison means nothing and is refused.  A negative
+    saving (the plan uses more) is reported as it is.
+    """
+    for v in (baseline_kwh, optimised_kwh, baseline_hours, optimised_hours):
+        if v is None or not np.isfinite(float(v)):
+            raise ValueError("Savings need finite numbers.")
+    if baseline_kwh < 0 or optimised_kwh < 0:
+        raise ValueError("Energy cannot be negative.")
+    if abs(float(baseline_hours) - float(optimised_hours)) > 1e-6:
+        raise ValueError(f"Baseline covers {baseline_hours:g} h but the plan covers {optimised_hours:g} h; "
+                         "they cannot be compared.")
+    saving = float(baseline_kwh) - float(optimised_kwh)
+    return {"saving_kwh": round(saving, 4),
+            "saving_pct": round(saving / baseline_kwh * 100.0, 2) if baseline_kwh > 0 else None,
+            "uses_more": saving < 0, "label": "estimate"}
+
+
 def validate_plan(pred: pd.DataFrame, sessions: pd.DataFrame, suggestions: List[dict],
                   tariff: Optional[Tariff] = None, prefs: Optional[HouseholdPrefs] = None) -> dict:
     """
@@ -603,6 +625,7 @@ def validate_plan(pred: pd.DataFrame, sessions: pd.DataFrame, suggestions: List[
     base_month_kwh, base_month_cost = month(base_kwh), month(base_cost)
     opt_month_kwh = round(base_month_kwh - month(est_kwh) + month(shift_loss_kwh), 2)
     opt_month_cost = round(base_month_cost - shift_saving_m - est_saving_m, 2)
+    energy = estimated_savings(base_month_kwh, max(0.0, opt_month_kwh), DAYS_PER_MONTH * 24, DAYS_PER_MONTH * 24)
     return {
         "history_days": round(days, 1),
         "baseline": {"kwh_month": base_month_kwh, "cost_month": base_month_cost, "avg_daily_peak_kw": round(peak_before, 2)},
@@ -612,8 +635,10 @@ def validate_plan(pred: pd.DataFrame, sessions: pd.DataFrame, suggestions: List[
                   "geyser loses a little heat while it waits (estimate), counted here"},
         "estimated_tips": {"energy_saving_kwh_month": month(est_kwh), "cost_saving_month": est_saving_m,
                            "label": "estimate from BEE guidance, not simulated"},
-        "energy_saving_kwh_month": round(base_month_kwh - opt_month_kwh, 2),
-        "energy_saving_pct": round((base_month_kwh - opt_month_kwh) / base_month_kwh * 100, 2) if base_month_kwh > 0 else 0.0,
+        "energy_saving_kwh_month": round(energy["saving_kwh"], 2),
+        "energy_saving_pct": energy["saving_pct"] if energy["saving_pct"] is not None else 0.0,
+        "uses_more_energy": energy["uses_more"],
+        "savings_label": "estimate",
         "cost_saving_month": round(base_month_cost - opt_month_cost, 2),
         "cost_saving_pct": round((base_month_cost - opt_month_cost) / base_month_cost * 100, 2) if base_month_cost > 0 else 0.0,
         "peak_change_kw": round(peak_after - peak_before, 2),

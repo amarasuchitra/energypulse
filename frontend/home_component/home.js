@@ -6,6 +6,9 @@ import * as THREE from "three";
 import { OrbitControls } from "./vendor/OrbitControls.js";
 
 const $ = (id) => document.getElementById(id);
+// Names and activity text come from the household (family names, custom appliances):
+// never let them be read as HTML.
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const AMBER = 0xf5a83c;
 const FAN_ICON = "<circle cx='12' cy='12' r='1.6'/><path d='M12 10.4c0-4 1-6.4 3-6.4 2.4 0 2.6 4 .2 6.2M13.4 12.8c3.4 2 5 4 4 5.8-1.2 2-4.8.2-5.6-2.9M10.6 12.8c-3.4 2-6 2.3-7 .6-1.2-2.1 2.2-4.3 5.3-3.4'/>";
@@ -575,7 +578,7 @@ function load(data) {
   if (first || S.sentNonce === undefined || data.ack === S.sentNonce) S.fans = { ...(data.fan_state || {}) };
   const sel = $("member");
   if (sel.options.length !== data.members.length) {
-    sel.innerHTML = data.members.map((n) => `<option>${n}</option>`).join("");
+    sel.innerHTML = data.members.map((n) => `<option>${esc(n)}</option>`).join("");
     if (S.member && data.members.includes(S.member)) sel.value = S.member;
   }
   S.member = sel.value;
@@ -613,7 +616,7 @@ function load(data) {
   $("play").style.display = data.source.real ? "none" : "";
   const tlH = TOP + 12 + data.appliances.length * (LANE + GAP);
   $("activity").innerHTML = data.activity.length
-    ? data.activity.slice(0, 4).map((x) => `<li><time>${x.time}</time>${x.text}</li>`).join("")
+    ? data.activity.slice(0, 4).map((x) => `<li><time>${esc(x.time)}</time>${esc(x.text)}</li>`).join("")
     : "<li>Nothing switched yet. Switch any device to see it appear here for the whole household.</li>";
   $("timeline").style.height = `${tlH}px`;
   buildList(); S.lastMinute = -1; S.lastPanel = 0;
@@ -799,7 +802,7 @@ function updatePanel(m) {
     $("detail").innerHTML = `<p class="never">Select a device to see its details.</p>`;
   } else if (!a) {
     const f = devByKey(S.selected), on = !!S.fans[f.key];
-    $("detail").innerHTML = `<h3>${f.name}</h3><div class="kind">${f.description}</div>
+    $("detail").innerHTML = `<h3>${esc(f.name)}</h3><div class="kind">${f.description}</div>
       <p>${on ? `On now, drawing ${(f.kw * 1000).toFixed(0)} W.` : "Off now."} This session: ${(S.devKwh[f.key] || 0).toFixed(3)} units, ${rs(S.devCost[f.key] || 0)}.</p>
       <p class="never">Left on for 8 hours a day it would use about ${(f.kw * 8 * 30).toFixed(1)} units a month, about ${rs(f.kw * 8 * 30 * d.rates[m])}. Its load is added to the meter reading while it is on.</p>
       ${f.specs ? `<details class="specs"><summary>Specification</summary>${specTable(f.specs)}</details>` : ""}`;
@@ -827,7 +830,7 @@ function updatePanel(m) {
       toast(`${al.name} has been running longer than normal.`, "warning");
     }
     alertEl.hidden = false;
-    alertEl.innerHTML = `<strong>${al.name} has been on for ${dur(Math.min(m, al.end) - al.start)}.</strong> A normal run is ${al.normal}. ${al.advice}`;
+    alertEl.innerHTML = `<strong>${esc(al.name)} has been on for ${dur(Math.min(m, al.end) - al.start)}.</strong> A normal run is ${al.normal}. ${al.advice}`;
   } else alertEl.hidden = true;
   if (S.hover) tip.innerHTML = describe(S.hover);
   setHeight();

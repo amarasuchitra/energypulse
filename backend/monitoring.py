@@ -3,7 +3,8 @@ Predicted versus actual use, and overconsumption alerts, for the simulated meter
 
 Pipeline for one household (run on the dashboard and by the hourly job):
 
-    simulated 1-minute meter (meter_sim)  ->  validation (hours with < 45 good readings are dropped)
+    simulated 1-minute meter (meter_sim)  ->  validation (readings.clean_readings: missing, negative,
+    outlier, duplicate and out-of-order readings; then hours with < 45 good readings are dropped)
     ->  hourly kWh  ->  next-hour model (forecast.meter_hour_forecasts, one call for all hours)
     ->  forecast_log table (one forecast per hour, made before the hour, never overwritten)
     ->  actual kWh recorded when the hour has finished
@@ -23,6 +24,7 @@ from appliance_profiles import DEFAULT_PROFILES
 from ep_log import get_logger
 from forecast import meter_hour_forecasts
 from forecast_features import TARGET
+from readings import clean_readings
 from sim_dataset import minute_to_hourly
 
 log = get_logger("monitoring")
@@ -199,6 +201,10 @@ def run_check(db, fc, household_id: str, minute_df: pd.DataFrame, now: pd.Timest
            "settings": asdict(settings), "logged": 0, "filled": 0}
     if minute_df is None or minute_df.empty:
         return out
+    if "mains_kw" in minute_df.columns:
+        minute_df, out["readings"] = clean_readings(minute_df)
+        if minute_df.empty:
+            return out
     upto = minute_df[pd.to_datetime(minute_df["datetime"]) < now.floor("min")]
     hourly = minute_to_hourly(upto)                          # completed hours only (>= 45 readings)
     hourly = hourly[pd.to_datetime(hourly["datetime"]) < now.floor("h")].dropna(subset=[TARGET])
@@ -216,6 +222,7 @@ def run_check(db, fc, household_id: str, minute_df: pd.DataFrame, now: pd.Timest
         return out
     result = check_overconsumption(log_df, settings, now)
     out["result"] = result
+    out["checked_at"] = now
     state, should_alert = next_state(db.get_store(household_id, STATE_KEY), result)
     db.set_store(household_id, STATE_KEY, state)
     if should_alert:

@@ -16,6 +16,7 @@ re-queried from family_members at send time.
 import os
 import re
 import smtplib
+import time
 import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -39,6 +40,20 @@ DEFAULT_SMTP_FROM = "noreply@energypulse.local"
 # Secrets may live in .streamlit/secrets.toml. Streamlit supports both a flat
 # file and grouped sections, so both layouts are searched.
 _SECRET_SECTIONS = (None, "notifications", "email", "sms")
+
+
+SMTP_ATTEMPTS = 2           # one retry, only for dropped connections and timeouts
+SMTP_RETRY_WAIT = 2.0       # seconds before the retry
+
+
+def _transient(exc: BaseException) -> bool:
+    """A failure worth retrying: the connection dropped or timed out.  A rejected
+    password or address is not; retrying it only repeats the rejection."""
+    if isinstance(exc, (smtplib.SMTPAuthenticationError, smtplib.SMTPRecipientsRefused,
+                        smtplib.SMTPSenderRefused, smtplib.SMTPDataError)):
+        return False
+    return isinstance(exc, (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError,
+                            TimeoutError, ConnectionError, OSError))
 
 
 def _secret_lookup(name: str) -> Optional[str]:
@@ -483,6 +498,19 @@ class NotificationService:
                 sent_to.append(email)
         return sent_to
 
+    def send_reset_code(self, to_email: str, code: str, minutes: int = 30) -> Tuple[bool, Optional[str]]:
+        """Email a password-reset code.  The code itself is never logged."""
+        if not self.email_configured():
+            return (False, "Email is not set up on this server.")
+        subject = "Your EnergyPulse password reset code"
+        body = (f"Hello,\n\nSomeone (hopefully you) asked to reset the EnergyPulse password for this email.\n\n"
+                f"Your code is: {code}\n\nIt works once and expires in {minutes} minutes. If you did not ask "
+                "for this, ignore this email; your password has not changed.\n\nEnergyPulse")
+        ok, err = self._deliver(to_email, subject, body, None)
+        if not ok:
+            log.warning("Reset code email failed: %s", _redact(err or "", self._secret_values()))
+        return ok, err
+
     def send_test_notification(self, household_id: str, recipient_email: str,
                                language: str = "en",
                                predicted_cost: Optional[float] = None,
@@ -640,26 +668,31 @@ class NotificationService:
         msg["From"] = self.SMTP_FROM
         msg["To"] = to_email
         msg.attach(MIMEText(body_text, "plain"))
-        try:
-            if self.SMTP_USE_SSL:
-                server = smtplib.SMTP_SSL(self.SMTP_HOST, self.SMTP_PORT, timeout=20)
-            else:
-                server = smtplib.SMTP(self.SMTP_HOST, self.SMTP_PORT, timeout=20)
-            with server:
-                # Port 465 negotiates TLS at connect time, so there is no
-                # STARTTLS step to perform in that case.
-                if not self.SMTP_USE_SSL and self.SMTP_STARTTLS:
-                    server.starttls()
-                if self._real(self.SMTP_USERNAME) or self.SMTP_PASSWORD:
-                    server.login(self.SMTP_USERNAME, self.SMTP_PASSWORD)
-                server.sendmail(self.SMTP_FROM, [to_email], msg.as_string())
-            return (True, None)
-        except Exception as e:
-            error = self._clean_error(e)
-            # to_email only — never the password or the API key.
-            log.error("SMTP send to %s via %s:%s failed: %s",
-                      to_email, self.SMTP_HOST, self.SMTP_PORT, error)
-            return (False, error)
+        error = None
+        for attempt in range(1, SMTP_ATTEMPTS + 1):
+            try:
+                if self.SMTP_USE_SSL:
+                    server = smtplib.SMTP_SSL(self.SMTP_HOST, self.SMTP_PORT, timeout=20)
+                else:
+                    server = smtplib.SMTP(self.SMTP_HOST, self.SMTP_PORT, timeout=20)
+                with server:
+                    # Port 465 negotiates TLS at connect time, so there is no
+                    # STARTTLS step to perform in that case.
+                    if not self.SMTP_USE_SSL and self.SMTP_STARTTLS:
+                        server.starttls()
+                    if self._real(self.SMTP_USERNAME) or self.SMTP_PASSWORD:
+                        server.login(self.SMTP_USERNAME, self.SMTP_PASSWORD)
+                    server.sendmail(self.SMTP_FROM, [to_email], msg.as_string())
+                return (True, None)
+            except Exception as e:
+                error = self._clean_error(e)
+                # to_email only — never the password or the API key.
+                log.error("SMTP send to %s via %s:%s failed (attempt %d): %s",
+                          to_email, self.SMTP_HOST, self.SMTP_PORT, attempt, error)
+                if not _transient(e) or attempt == SMTP_ATTEMPTS:
+                    break
+                time.sleep(SMTP_RETRY_WAIT * attempt)       # a dropped connection: try again shortly
+        return (False, error)
 
     def send_sms(self, to_phone: str, message: str) -> bool:
         if self.sms_backend != "twilio":

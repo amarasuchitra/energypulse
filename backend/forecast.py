@@ -48,6 +48,7 @@ class Forecaster:
         sim = self.meta.get("simulated_meter", {})
         self.sim_features = sim.get("features", [])
         self.sim_offset = float(sim.get("interval_offset_kw", 0.0))
+        self.sim_error = None
         self._lstm_tried = lstm is not None
 
     @property
@@ -123,6 +124,11 @@ class Forecaster:
                 if lgb_model is not None:
                     fc.xgb_sim = lgb_model                  # same predict(X) interface
             fc.q05_sim, fc.q95_sim = unpickle("forecast_q05_sim.pkl"), unpickle("forecast_q95_sim.pkl")
+            problem = sim_schema_problem(fc)
+            if problem:                                   # never predict from inputs in the wrong places
+                print(f"[forecast] live-meter model disabled: {problem}")
+                fc.xgb_sim = None
+                fc.sim_error = problem
         if not use_lstm:
             fc._lstm_tried = True
         return fc
@@ -262,6 +268,35 @@ def _lightgbm(file_path: str):
 
 
 # ---------------------------------------------------------------- simulated meter
+def model_feature_count(model) -> Optional[int]:
+    """How many inputs a loaded model was trained on (None if it does not say)."""
+    for get in (lambda m: m.booster.num_feature(), lambda m: m.n_features_in_,
+                lambda m: m.get_booster().num_features()):
+        try:
+            return int(get(model))
+        except Exception:
+            continue
+    return None
+
+
+def sim_schema_problem(fc: "Forecaster") -> Optional[str]:
+    """A description of why the live-meter model cannot be used with the feature list, or None."""
+    if fc.xgb_sim is None:
+        return None
+    if not fc.sim_features:
+        return "forecast_meta.json lists no input features for it"
+    if len(set(fc.sim_features)) != len(fc.sim_features):
+        return "the feature list has duplicates"
+    n = model_feature_count(fc.xgb_sim)
+    if n is not None and n != len(fc.sim_features):
+        return f"the model takes {n} inputs but forecast_meta.json lists {len(fc.sim_features)}"
+    for name, q in (("q05", fc.q05_sim), ("q95", fc.q95_sim)):
+        qn = getattr(q, "n_features_in_", None) if q is not None else None
+        if qn is not None and qn != len(fc.sim_features):
+            return f"the {name} range model takes {qn} inputs, not {len(fc.sim_features)}"
+    return None
+
+
 def _sim_ready(fc: "Forecaster") -> bool:
     return fc.xgb_sim is not None and bool(fc.sim_features)
 
@@ -302,11 +337,18 @@ def meter_hour_forecasts(fc: "Forecaster", hourly: pd.DataFrame, context: Option
         return pd.DataFrame(columns=["target_hour", "predicted_kw", "lower_kw", "upper_kw"])
     h = to_hourly(hourly)
     X = _add_context(fc, h, hourly_features(h).reindex(columns=fc.sim_features), context)
+    X = X.apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)   # infinities are unknowns
     ok = h[TARGET].notna().to_numpy()
     X = X[ok]
     if X.empty:
         return pd.DataFrame(columns=["target_hour", "predicted_kw", "lower_kw", "upper_kw"])
-    pred = np.maximum(fc.xgb_sim.predict(X), 0.0)
+    raw = np.asarray(fc.xgb_sim.predict(X), dtype=float)
+    finite = np.isfinite(raw)
+    if not finite.all():                       # a broken output is dropped, never shown as a forecast
+        X, raw = X[finite], raw[finite]
+        if X.empty:
+            return pd.DataFrame(columns=["target_hour", "predicted_kw", "lower_kw", "upper_kw"])
+    pred = np.maximum(raw, 0.0)                # use cannot be negative
     out = pd.DataFrame({"target_hour": X.index + pd.Timedelta(hours=1), "predicted_kw": pred})
     if fc.q05_sim is not None and fc.q95_sim is not None:
         a, b = fc.q05_sim.predict(X), fc.q95_sim.predict(X)
