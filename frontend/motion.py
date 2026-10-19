@@ -271,6 +271,9 @@ _CARRIER_JS = r"""
 """
 
 
+_EMOJI = {"success": "✅", "warning": "⚠️", "error": "🚨", "info": "ℹ️"}
+
+
 def notify(kind: str, text: str) -> None:
     """Queue a toast.  kind: success | warning | error | info."""
     if kind not in _ICONS:
@@ -282,7 +285,18 @@ def notify(kind: str, text: str) -> None:
 
 def runtime(page: str) -> None:
     """Render once per run, anywhere on the page.  It takes no room."""
-    data = {"page": page, "toasts": st.session_state.get("_toasts", []), "icons": _ICONS}
+    # Pop-ups use Streamlit's own toast: it shows reliably on every host (the page script below may be
+    # blocked by the browser).  Each queued message is shown once, then removed from the queue.
+    queue = st.session_state.get("_toasts", [])
+    for t in queue:
+        try:
+            st.toast(t["text"], icon=_EMOJI.get(t["kind"], "ℹ️"), duration="long")
+        except TypeError:
+            st.toast(t["text"], icon=_EMOJI.get(t["kind"], "ℹ️"))
+        except Exception:
+            pass
+    st.session_state["_toasts"] = []
+    data = {"page": page, "toasts": [], "icons": _ICONS}
     safe = lambda text: json.dumps(text).replace("</", "<\\/")
     js = _CARRIER_JS.replace("__CODE__", safe(_INSTALL_JS)).replace("__DATA__", safe(data))
     components.html(f"<script>{js}</script>", height=0)
