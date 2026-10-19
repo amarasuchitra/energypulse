@@ -341,7 +341,7 @@ class Accounts:
 
     def check_token(self, token: str, now: Optional[float] = None) -> Optional[Tuple[str, str, float]]:
         """(email, display name, issued at) for a valid, unexpired token; otherwise None."""
-        if not token or len(token) > 200:
+        if not isinstance(token, str) or not token or len(token) > 200:
             return None
         now = time.time() if now is None else now
         with self._conn() as conn:
@@ -354,7 +354,7 @@ class Accounts:
         return row["email"], row["name"], float(row["created_at"])
 
     def revoke_token(self, token: str) -> None:
-        if token:
+        if isinstance(token, str) and token:
             with self._conn() as conn:
                 conn.execute("DELETE FROM login_tokens WHERE token_hash = ?", (self._token_hash(token),))
 

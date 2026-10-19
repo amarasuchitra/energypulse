@@ -287,3 +287,10 @@ def test_simultaneous_signups_for_one_email_create_one_account(acc):
     assert results.count(True) == 1
     with sqlite3.connect(acc.db_path) as c:
         assert c.execute("SELECT COUNT(*) FROM credentials WHERE email='race@example.com'").fetchone()[0] == 1
+
+
+@pytest.mark.brief("AUTH-011", "SEC-005")
+@pytest.mark.parametrize("token", [None, "", 123, b"bytes", ["list"], "x" * 500, "not-a-real-token"])
+def test_odd_sign_in_cookies_are_refused_without_crashing(acc, token):
+    assert acc.check_token(token) is None
+    acc.revoke_token(token)                                             # no error either

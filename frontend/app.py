@@ -957,7 +957,7 @@ def restore_remembered_session(auth: dict) -> None:
         token = st.context.cookies.get(COOKIE_NAME)
     except Exception:
         token = None
-    if not token:
+    if not isinstance(token, str) or not token:
         return
     found = get_accounts().check_token(token)
     if not found:
