@@ -2268,6 +2268,102 @@ def _render_appliances_editor(hd: dict, lang: str, closable: bool = False) -> No
         st.rerun()
 
 
+def render_bill_tracker() -> None:
+    """This month's units and bill from the household's own meter readings (billing.py)."""
+    import billing
+    db, household_id = get_db(), current_household_id()
+    try:
+        raw = db.get_store(household_id, billing.READINGS_KEY, []) or []
+        plan = billing.BillPlan.clean(db.get_store(household_id, billing.PLAN_KEY))
+    except Exception:
+        log.exception("Could not read meter readings")
+        st.info("Your meter readings are not available just now.")
+        return
+    now = pd.Timestamp(local_now().replace(tzinfo=None))
+    status = billing.month_status(raw, now)
+    tip = billing.advice(status, plan)
+    with st.container(border=True, key="bill_tracker"):
+        section(f"This month's bill, from your meter ({now:%B})")
+        if status["units_so_far"] is None or status["projected"] is None:
+            n = status["readings"]
+            st.caption("Add the number on your electricity meter now, and again tomorrow or later. "
+                       "From two readings a day apart the app works out your units, this month's bill and "
+                       "how to stay under your free limit or the next slab."
+                       + (f" You have {n} reading{'s' if n != 1 else ''} so far." if n else ""))
+        else:
+            b = tip["projected_bill"]
+            c1, c2, c3 = st.columns(3)
+            metric_card(c1, label="Units so far", value=f"{status['units_so_far']:.0f}",
+                        sub=f"about {status['daily_avg']:.1f} a day recently")
+            metric_card(c2, label="Heading for", value=f"{status['projected']:.0f}", unit="units",
+                        sub=f"{status['days_left']:.0f} days left in {now:%B}")
+            scheme = {"free": "free under Gruha Jyothi", "partly free": "Gruha Jyothi: you pay for the extra units",
+                      "above 200: no benefit": "over 200 units: no Gruha Jyothi this month"}.get(b["scheme"], "")
+            metric_card(c3, label="Estimated bill", value=f"Rs. {b['payable']:,.0f}",
+                        sub=scheme or f"energy Rs. {b['energy']:,.0f} + fixed Rs. {b['fixed']:,.0f}")
+            (st.warning if tip.get("target") is not None and status["projected"] > tip["target"] else st.success)(
+                tip["message"])
+            st.caption("Estimates from your readings and your tariff below. Check the rates against your latest bill.")
+        with st.expander("Add a meter reading", expanded=not raw):
+            c1, c2 = st.columns([2, 1], vertical_alignment="bottom")
+            value = c1.number_input("Number on the meter (kWh)", min_value=0.0, max_value=9_999_999.0, value=None,
+                                    step=0.1, format="%.1f", key=f"mr_value_{st.session_state.get('mr_ver', 0)}",
+                                    placeholder="e.g. 4521.7")
+            photo = st.file_uploader("Or take a photo of the meter", type=["jpg", "jpeg", "png"], key="mr_photo")
+            if photo is not None:
+                found, why = billing.read_meter_photo(photo.getvalue())
+                if found:
+                    st.caption("Numbers read from the photo (check against the meter): "
+                               + ", ".join(f"{v:g}" for v in found) + ". Type the right one above.")
+                else:
+                    st.caption(why)
+            if c2.button("Save reading", type="primary", key="mr_save", width="stretch", disabled=value is None):
+                try:
+                    new = billing.add_reading(raw, value, now.floor("min"),
+                                              source="photo" if photo is not None else "typed")
+                    db.set_store(household_id, billing.READINGS_KEY, new)
+                    st.session_state["mr_ver"] = st.session_state.get("mr_ver", 0) + 1     # an empty box again
+                    notify("success", f"Meter reading {value:g} saved.")
+                    st.rerun()
+                except billing.BadReading as exc:
+                    st.error(str(exc))
+                except Exception:
+                    log.exception("Saving a meter reading failed")
+                    st.error("The reading could not be saved just now. Try again.")
+            readings = billing.clean_readings(raw)
+            if readings:
+                st.caption("Last readings: " + " · ".join(f"{r['at']:%d %b %H:%M} {r['value']:g}"
+                                                          for r in readings[-4:][::-1]))
+                if st.button("Remove the last reading", key="mr_undo"):
+                    db.set_store(household_id, billing.READINGS_KEY, raw[:-1] if raw else [])
+                    st.rerun()
+        with st.expander("Your tariff and Gruha Jyothi"):
+            st.caption("Rates change every year and differ by supply company. Copy the slabs from your latest bill. "
+                       "Leave 'Up to' empty for the top slab.")
+            slabs = st.data_editor(pd.DataFrame(plan.slabs).rename(columns={"upto": "Up to (units)", "rate": "Rs. per unit"}),
+                                   num_rows="dynamic", key="bp_slabs", width="stretch")
+            c1, c2 = st.columns(2)
+            fixed = c1.number_input("Fixed charge (Rs. per kW a month)", 0.0, 1000.0, float(plan.fixed_per_kw), 5.0,
+                                    key="bp_fixed")
+            kw = c2.number_input("Sanctioned load (kW)", 0.5, 50.0, float(plan.sanctioned_kw), 0.5, key="bp_kw")
+            gj = st.toggle("I am in the Gruha Jyothi scheme (Karnataka)", value=plan.gruha_jyothi, key="bp_gj")
+            avg = st.number_input("My average monthly units last year (on the bill as the eligible average)",
+                                  0.0, 10000.0, float(plan.gj_average or 0.0), 1.0, key="bp_avg", disabled=not gj)
+            if gj and avg:
+                st.caption(f"Free limit: {min(billing.GJ_CAP, avg * (1 + billing.GJ_MARGIN)):.0f} units a month "
+                           "(average + 10%, at most 200). Check it on your bill.")
+            if st.button("Save tariff", key="bp_save"):
+                rows = [{"upto": r.get("Up to (units)"), "rate": r.get("Rs. per unit")}
+                        for r in slabs.to_dict("records")]
+                rows = [{"upto": None if pd.isna(r["upto"]) else r["upto"], "rate": r["rate"]} for r in rows
+                        if not pd.isna(r["rate"])]
+                new_plan = billing.BillPlan.clean({"slabs": rows, "fixed_per_kw": fixed, "sanctioned_kw": kw,
+                                                   "gruha_jyothi": gj, "gj_average": avg if gj and avg else None})
+                db.set_store(household_id, billing.PLAN_KEY, new_plan.to_dict())
+                notify("success", "Tariff saved.")
+                st.rerun()
+
+
 def render_dashboard_appliances(hd: dict) -> None:
     """The saved appliance list on the Dashboard, with an Edit appliances button beside its heading."""
     items = [a for a in (hd.get("appliances") or []) if isinstance(a, dict)]
@@ -3216,6 +3312,7 @@ def _main_dashboard_inner():
             except Exception:
                 pass
         render_dashboard_appliances(home_details)
+        render_bill_tracker()
         render_home_tab(tariff_rate, home_details, db=get_db(), household_id=household_id,
                         user_name=st.session_state.auth.get("name") or T("guest_name"),
                         user_email=auth_email, theme=current_theme(),
