@@ -105,6 +105,22 @@ BRANDS: Dict[str, List[str]] = {
 }
 ALL_BRANDS = sorted({b for v in BRANDS.values() for b in v}, key=len, reverse=True)
 
+# Model classes in the catalogue that LOOK different, so a photo can tell them apart.  Models
+# that look alike (1.5 ton 3-star vs 5-star, TV sizes) are not guessed: the user picks.
+VISUAL_CLASSES: Dict[str, Dict[str, List[str]]] = {
+    "ac": {"ac_1t_window_3s": ["a window air conditioner fitted in a window", "a box shaped window AC"],
+           "ac_15t_split_3s": ["a split air conditioner indoor unit mounted on a wall", "a long white wall AC unit"]},
+    "fridge": {"fridge_sd_190": ["a single door refrigerator", "a small fridge with one door"],
+               "fridge_dd_250": ["a double door refrigerator with the freezer door on top", "a fridge with two doors one above the other"],
+               "fridge_sbs_600": ["a side by side refrigerator with two tall doors", "a large two door fridge opening from the middle"]},
+    "washing_machine": {"wm_semi_7": ["a semi automatic twin tub washing machine with two lids"],
+                        "wm_top_7": ["a top loading washing machine with a lid on top"],
+                        "wm_front_7": ["a front loading washing machine with a round glass door"]},
+    "geyser": {"geyser_25": ["a large storage water heater tank"], "geyser_instant_3": ["a small instant water heater"]},
+    "cooler": {"cooler_desert": ["a large desert air cooler"], "cooler_personal": ["a small personal air cooler"]},
+}
+MIN_CLASS, CLASS_MARGIN = 0.55, 0.20
+
 _SESS: dict = {}
 _TEXT_CACHE: Dict[str, np.ndarray] = {}
 
@@ -192,6 +208,41 @@ def embed_image(data: bytes) -> np.ndarray:
     return _unit(_pick_output(s["vision"].run(None, {name: x}), s["vision"], "image_embeds"))[0]
 
 
+def logo_text(data: bytes) -> str:
+    """Text read for logos: enlarged, normal and inverted (white logo on a dark panel), sparse layout."""
+    try:
+        import io
+        import pytesseract
+        from PIL import Image, ImageOps
+        img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("L")
+        if max(img.size) < 1600:
+            k = 1600 / max(img.size)
+            img = img.resize((round(img.width * k), round(img.height * k)))
+        img = ImageOps.autocontrast(img)
+        return "\n".join(pytesseract.image_to_string(im, config="--psm 11") for im in (img, ImageOps.invert(img)))
+    except Exception:
+        return ""
+
+
+_WARM = {"started": False}
+
+
+def warm_up() -> None:
+    """Fetch and load the model in the background, so the first photo does not wait for it."""
+    if _WARM["started"] or os.environ.get("ENERGYPULSE_NO_WARMUP"):
+        return
+    _WARM["started"] = True
+    import threading
+
+    def run():
+        try:
+            _load()
+            embed_texts([t for v in DESCRIPTIONS.values() for t in v] + NOT_APPLIANCE)
+        except Exception:
+            pass                                            # the first photo will try again and say why
+    threading.Thread(target=run, name="clip-warm-up", daemon=True).start()
+
+
 # ----------------------------------------------------------------- deciding
 def _softmax(z: np.ndarray) -> np.ndarray:
     z = z - z.max()
@@ -238,7 +289,7 @@ def recognise(data: bytes, text: str = "", image_vec: Optional[np.ndarray] = Non
     {"types": [{"type_key","name","score","typical_w"}], "brand": {"name","source","score"} | None,
      "model_no": str | None, "why": str | None}.  `image_vec`/`embed` let tests pass stand-ins.
     """
-    out = {"types": [], "brand": None, "model_no": None, "why": None}
+    out = {"types": [], "brand": None, "model_no": None, "model_class": None, "why": None}
     embed = embed or embed_texts
     try:
         if image_vec is None:
@@ -272,7 +323,16 @@ def recognise(data: bytes, text: str = "", image_vec: Optional[np.ndarray] = Non
         if len(out["types"]) == 3:
             break
     top = out["types"][0]["type_key"]
+    if VISUAL_CLASSES.get(top):
+        cp = sorted(classify(image_vec, VISUAL_CLASSES[top], embed).items(), key=lambda kv: -kv[1])
+        if cp[0][1] >= MIN_CLASS and cp[0][1] - (cp[1][1] if len(cp) > 1 else 0) >= CLASS_MARGIN:
+            m = catalog.specs(cp[0][0]) or {}
+            out["model_class"] = {"model_id": cp[0][0], "label": m.get("label", cp[0][0]), "score": round(cp[0][1], 3)}
     printed = brands_in_text(text, top)
+    if not printed and data:
+        extra = logo_text(data)                             # logos are often small or light-on-dark
+        printed = brands_in_text(extra, top)
+        text = (text or "") + "\n" + extra
     if printed:
         out["brand"] = {"name": printed[0], "source": "printed on it", "score": 1.0}
     elif BRANDS.get(top):

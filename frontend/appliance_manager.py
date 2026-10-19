@@ -182,6 +182,8 @@ def describe_recognition(r: dict) -> str:
     line = f"**Looks like a {who}{g['name'].lower()}** ({g['score']:.0%} sure)"
     if brand:
         line += f"; company {'read from the text on it' if brand['source'] == 'printed on it' else 'recognised from its logo or look'}"
+    if r.get("model_class"):
+        line += f"; looks like a {r['model_class']['label'].lower()}"
     if r.get("model_no"):
         line += f"; model number {r['model_no']}"
     if g.get("typical_w"):
@@ -382,7 +384,9 @@ def render_drop_zone(db, household_id: str, notify, key: str = "drop", compact: 
                                        key=f"{key}_model_{pid}", placeholder="on the label or the bill")
             if st.button("Save", type="primary", key=f"{key}_save_{pid}"):
                 if where == choices[0]:
-                    item = catalog.item_for(t.key)
+                    mc = (rec.get("model_class") or {}) if not fig else {}
+                    same_type = rec.get("types") and rec["types"][0]["type_key"] == t.key
+                    item = catalog.item_for(t.key, mc.get("model_id") if same_type else None)
                     items.append(item)
                     st.session_state["am_open"] = len(items) - 1
                 else:

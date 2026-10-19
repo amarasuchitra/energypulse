@@ -48,6 +48,7 @@ jobs:
         env:
           ENERGYPULSE_NO_SCHEDULER: "1"
           ENERGYPULSE_DISABLE_LSTM: "1"
+          VISION_EVAL: "1"
         run: |
           mkdir -p tests/reports
           python -m pytest tests -q -rs --durations=20 \

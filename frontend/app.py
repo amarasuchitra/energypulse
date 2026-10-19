@@ -3519,6 +3519,11 @@ def main():
         except Exception as e:
             log.exception("Scheduler init failed")
     
+    try:                                    # load the photo-recognition model in the background
+        import appliance_vision
+        appliance_vision.warm_up()
+    except Exception:
+        pass
     apply_theme()
     inject_skin()
     flush_cookie_changes()
