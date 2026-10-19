@@ -237,7 +237,7 @@ def warm_up() -> None:
     def run():
         try:
             _load()
-            embed_texts([t for v in DESCRIPTIONS.values() for t in v] + NOT_APPLIANCE)
+            embed_texts(_phrasings([t for v in DESCRIPTIONS.values() for t in v] + NOT_APPLIANCE))
         except Exception:
             pass                                            # the first photo will try again and say why
     threading.Thread(target=run, name="clip-warm-up", daemon=True).start()
@@ -250,10 +250,20 @@ def _softmax(z: np.ndarray) -> np.ndarray:
     return e / e.sum()
 
 
+def _phrasings(descs: List[str]) -> List[str]:
+    """Each description as written and as 'a photo of ...' (the wording CLIP was trained on)."""
+    out = []
+    for d in descs:
+        out.append(d)
+        if not d.startswith("a photo of"):
+            out.append(f"a photo of {d}")
+    return out
+
+
 def classify(image_vec: np.ndarray, groups: Dict[str, List[str]], embed=embed_texts) -> Dict[str, float]:
     """Probability per group: each group's descriptions averaged into one direction, then softmax."""
     keys = list(groups)
-    centres = np.stack([_unit(embed(groups[k]).mean(axis=0)) for k in keys])
+    centres = np.stack([_unit(embed(_phrasings(groups[k])).mean(axis=0)) for k in keys])
     p = _softmax(SCALE * centres @ image_vec)
     return dict(zip(keys, p.tolist()))
 
