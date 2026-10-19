@@ -238,19 +238,20 @@ def run_check(db, fc, household_id: str, minute_df: pd.DataFrame, now: pd.Timest
 
 
 def deliver(db, household_id: str, people: List[dict], subject: str, body: str, data: dict,
-            service=None, language: str = "en") -> List[dict]:
+            service=None, language: str = "en", notification_type: str = ALERT_TYPE,
+            triggered_by: str = "actual above forecast", email: bool = True) -> List[dict]:
     """
     Record the alert for every household member (shown in the app) and email it
     where email is configured.  The status says what really happened:
     "in-app" (not emailed), "sent", or "failed" with the error.
     """
-    report = []
+    report, email_ok = [], email
     for person in people or []:
         email = (person.get("email") or "").strip().lower()
         if not email:
             continue
         status, error = "in-app", None
-        if service is not None and not email.endswith(".local"):
+        if email_ok and service is not None and not email.endswith(".local"):
             try:
                 if service.email_configured():
                     ok, error = service._deliver(email, subject,
@@ -261,8 +262,8 @@ def deliver(db, household_id: str, people: List[dict], subject: str, body: str, 
                 status, error = "failed", type(exc).__name__
                 log.warning("Alert email for household %s failed: %s", household_id, type(exc).__name__)
         try:
-            db.log_notification(household_id, email, person.get("name") or email, ALERT_TYPE,
-                                "actual above forecast", data, subject, body, language,
+            db.log_notification(household_id, email, person.get("name") or email, notification_type,
+                                triggered_by, data, subject, body, language,
                                 status=status, error_message=error)
         except Exception:
             log.exception("Could not store the alert for %s", household_id)

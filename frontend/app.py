@@ -1932,6 +1932,96 @@ def render_overuse_banner(household_id):
         f"{entry.get('body_text', '')}  \n<small>{delivered}</small>", icon="⚡" if ongoing else "ℹ️")
 
 
+@st.cache_data(show_spinner=False, ttl=120)
+def _live_events_cached(date, scenario, owned, minute, ratio, extra_kw, min_minutes, enabled):
+    """Today's live alerts up to this minute (high use, appliance left on); see live_watch.py."""
+    import live_watch
+    from daily_brief import right_now
+    pred = detected_history(date, scenario, owned)
+    day = pd.to_datetime(pred["datetime"]).dt.normalize()
+    today = pred[day == day.iloc[-1]].reset_index(drop=True)
+    typical = right_now(pred, owned, Tariff(), minute)["typical"]
+    s = live_watch.LiveSettings(enabled=enabled, ratio=ratio, extra_kw=extra_kw, min_minutes=int(min_minutes))
+    return live_watch.check(today, typical, minute, owned, date, s)
+
+
+def _live_settings(household_id):
+    import live_watch
+    raw = {}
+    try:
+        if household_id:
+            raw = get_db().get_store(household_id, live_watch.SETTINGS_KEY) or {}
+    except Exception:
+        log.exception("Could not read live alert settings")
+    return live_watch.LiveSettings.clean(raw)
+
+
+def show_popup(subject, body, icon="⚡"):
+    """A pop-up that also works inside a fragment (Streamlit's own toast), kept on screen a little longer."""
+    text = f"**{subject}**  \n{body}"
+    try:
+        st.toast(text, icon=icon, duration="long")
+    except TypeError:                                    # an older Streamlit without `duration`
+        st.toast(text, icon=icon)
+
+
+def run_live_alerts(household_id, people, scenario, owned, minute):
+    """Pop up new live alerts once, store them for the household (and email when set up). Returns today's list."""
+    import live_watch
+    import monitoring
+    s = _live_settings(household_id)
+    date = today_str()
+    try:
+        events = _live_events_cached(date, scenario, tuple(owned), minute, s.ratio, s.extra_kw, s.min_minutes,
+                                     s.enabled)
+    except Exception:
+        log.exception("Live alert check failed")
+        return []
+    seen = st.session_state.setdefault("_live_seen", set())
+    sent = {}
+    if household_id:
+        try:
+            sent = get_db().get_store(household_id, live_watch.SENT_KEY) or {}
+        except Exception:
+            sent = {}
+    stored = set(sent.get(date, [])) if isinstance(sent, dict) else set()
+    new = live_watch.to_announce(events, seen, minute)
+    for e in new:
+        seen.add(e["id"])
+        show_popup(e["subject"], e["body"])
+    fresh = [e for e in events if e["id"] not in stored]
+    if household_id and fresh:
+        for e in fresh:
+            try:
+                monitoring.deliver(get_db(), household_id, people or [], e["subject"], e["body"],
+                                   {"id": e["id"], "kind": e["kind"], "start": e["start"]},
+                                   get_notification_service(), st.session_state.get("lang", "en"),
+                                   notification_type=live_watch.LIVE_TYPE, triggered_by="live meter check",
+                                   email=bool(e["ongoing"]))
+            except Exception:
+                log.exception("Could not store a live alert")
+            stored.add(e["id"])
+        try:
+            get_db().set_store(household_id, live_watch.SENT_KEY, {date: sorted(stored)})
+        except Exception:
+            log.exception("Could not record live alerts as sent")
+    return events
+
+
+def render_live_alerts(events):
+    """Banner for what is happening now, and today's earlier alerts underneath."""
+    if not events:
+        return
+    now_ = [e for e in events if e["ongoing"]]
+    for e in now_[:2]:
+        st.warning(f"**{e['subject']}**  \n{e['body']}", icon="⚡")
+    earlier = [e for e in events if not e["ongoing"]]
+    if earlier:
+        with st.expander(f"Today's alerts ({len(earlier)} earlier)", expanded=not now_):
+            for e in earlier:
+                st.markdown(f"**{e['subject']}**  \n{e['body']}")
+
+
 def render_now_section(tariff_rate, owned, household_id=None, people=None):
     """
     The simulated meter, refreshed at three speeds:
@@ -1983,6 +2073,12 @@ def render_now_section(tariff_rate, owned, household_id=None, people=None):
                     trend_dir="neutral" if change is None or abs(change) < 2 else ("up" if change > 0 else "down"))
 
     live_tile()
+
+    @st.fragment(run_every=20)
+    def live_alerts():
+        render_live_alerts(run_live_alerts(household_id, people or [], scenario, owned, now_minute()))
+
+    live_alerts()
     if upcoming.empty:
         st.info("The next-hour forecast is not available right now"
                 + (f" ({load_forecaster().sim_error})." if getattr(load_forecaster(), "sim_error", None) else ".")
@@ -2505,6 +2601,31 @@ def render_alert_settings():
                f"used more than {new.threshold_pct:.0f}% and at least {new.min_excess_kwh:.2f} units above the "
                "forecast; a new alert needs use to return to normal first. Alerts are shown on the Dashboard and "
                "kept on the Notifications page, and emailed when email is set up.")
+
+    import live_watch
+    st.markdown("**Live alerts (checked every minute)**")
+    live = _live_settings(household_id)
+    l_on = st.toggle("Pop up while it is happening: high use, or an appliance left on", value=live.enabled, key="la_on")
+    d1, d2, d3 = st.columns(3)
+    ratio = d1.number_input("Load above (x usual)", 1.1, 5.0, float(live.ratio), 0.1, key="la_ratio", disabled=not l_on)
+    extra = d2.number_input("And at least (kW above usual)", 0.2, 5.0, float(live.extra_kw), 0.1, key="la_kw",
+                            disabled=not l_on)
+    mins = d3.number_input("For minutes in a row", 2, 60, int(live.min_minutes), 1, key="la_min", disabled=not l_on)
+    new_live = live_watch.LiveSettings.clean({"enabled": l_on, "ratio": ratio, "extra_kw": extra, "min_minutes": mins})
+    if new_live != live:
+        try:
+            db.set_store(household_id, live_watch.SETTINGS_KEY,
+                         {"enabled": new_live.enabled, "ratio": new_live.ratio, "extra_kw": new_live.extra_kw,
+                          "min_minutes": new_live.min_minutes})
+        except Exception:
+            log.exception("Could not save live alert settings")
+            st.error("The live alert settings could not be saved just now. Try again.")
+    st.caption(f"A pop-up appears when the load stays above {new_live.ratio:.1f} times the usual load for that time "
+               f"of day and at least {new_live.extra_kw:.1f} kW above it, for {new_live.min_minutes} minutes in a "
+               "row; or when an appliance runs longer than it normally should (a water heater left on, a pump "
+               "running dry). Each alert pops up once and is kept on the Notifications page.")
+    if st.button("Show a test alert", key="la_test"):
+        show_popup("Test alert", "This is how an alert appears. Real alerts also show on the Dashboard.")
 
 
 def render_settings_page():

@@ -376,6 +376,8 @@ def render_notifications_tab(db, household_id: str, primary_email: str,
 
 def _localize_notif_type(type_name: str, language: str) -> str:
     key = NOTIFICATION_TYPE_KEY.get(type_name)
+    if not key and type_name == "live_alert":
+        return "Live alert"
     return t_lang(key, language) if key else type_name
 
 
