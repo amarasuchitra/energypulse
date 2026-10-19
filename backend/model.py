@@ -65,7 +65,7 @@ PATHS = {
     "q05_power": os.path.join(MODEL_DIR, "forecast_q05_power.pkl"),
     "q95_power": os.path.join(MODEL_DIR, "forecast_q95_power.pkl"),
     "xgb_sim": os.path.join(MODEL_DIR, "forecast_xgb_sim.json"),
-    "lgb_sim": os.path.join(MODEL_DIR, "forecast_lgb_sim.txt"),
+    "lgb_sim": os.path.join(MODEL_DIR, "forecast_lgb_sim.txt.gz"),
     "q05_sim": os.path.join(MODEL_DIR, "forecast_q05_sim.pkl"),
     "q95_sim": os.path.join(MODEL_DIR, "forecast_q95_sim.pkl"),
     "lstm": os.path.join(MODEL_DIR, "forecast_lstm.keras"),
@@ -430,8 +430,13 @@ def train_simulated_meter(xgb_params):
                     out["comparison"]["baseline_same_hour_mean_7_days"]["mae_kw"])
     out["improvement_over_best_baseline_pct"] = round((1 - out["comparison"]["chosen"]["mae_kw"] / best_base) * 100, 1)
     model.save_model(PATHS["xgb_sim"])                     # kept as the fallback when LightGBM is unavailable
-    if chosen == "lightgbm":
-        lgb_model.booster_.save_model(PATHS["lgb_sim"])
+    stale_txt = PATHS["lgb_sim"][:-3]                      # older uncompressed copy, if any
+    if os.path.exists(stale_txt):
+        os.remove(stale_txt)
+    if chosen == "lightgbm":                               # gzip: about 94 MB -> 34 MB
+        import gzip
+        with gzip.open(PATHS["lgb_sim"], "wt", encoding="utf-8", compresslevel=9) as fh:
+            fh.write(lgb_model.booster_.model_to_string())
     elif os.path.exists(PATHS["lgb_sim"]):
         os.remove(PATHS["lgb_sim"])
     for alpha, key in ((0.05, "q05_sim"), (0.95, "q95_sim")):

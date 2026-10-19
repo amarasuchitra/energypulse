@@ -332,9 +332,27 @@
       "hour_sin",
       "hour_cos",
       "dow_sin",
-      "dow_cos"
+      "dow_cos",
+      "temp_next",
+      "temp_prev_day",
+      "cooling_deg",
+      "people",
+      "area_sqft",
+      "has_ac",
+      "has_geyser",
+      "n_appliances"
     ],
-    "interval_offset_kw": 0.005996834514199879,
+    "context_features": [
+      "temp_next",
+      "temp_prev_day",
+      "cooling_deg",
+      "people",
+      "area_sqft",
+      "has_ac",
+      "has_geyser",
+      "n_appliances"
+    ],
+    "interval_offset_kw": 0.005045872619041288,
     "homes": {
       "train": 80,
       "validation": 20,
@@ -342,11 +360,22 @@
     },
     "test_hours": 38130,
     "test_mean_kw": 0.4936,
+    "model": "lightgbm",
     "comparison": {
+      "chosen": {
+        "mae_kw": 0.1077,
+        "rmse_kw": 0.2067,
+        "r2": 0.7522
+      },
       "xgboost": {
-        "mae_kw": 0.1092,
-        "rmse_kw": 0.2102,
-        "r2": 0.7438
+        "mae_kw": 0.1083,
+        "rmse_kw": 0.2078,
+        "r2": 0.7493
+      },
+      "lightgbm": {
+        "mae_kw": 0.1077,
+        "rmse_kw": 0.2067,
+        "r2": 0.7522
       },
       "baseline_persistence": {
         "mae_kw": 0.1825,
@@ -360,8 +389,8 @@
       }
     },
     "interval": {
-      "test_coverage": 0.8824,
-      "mean_width_kw": 0.4699
+      "test_coverage": 0.8811,
+      "mean_width_kw": 0.4711
     },
     "xgb_params": {
       "max_depth": 7,
@@ -370,9 +399,20 @@
       "subsample": 0.7,
       "colsample_bytree": 0.6,
       "reg_lambda": 5.0,
-      "n_estimators": 3988
+      "n_estimators": 3995
     },
-    "improvement_over_best_baseline_pct": 34.0
+    "lgb_params": {
+      "num_leaves": 127,
+      "learning_rate": 0.02,
+      "min_child_samples": 80,
+      "subsample": 0.7,
+      "subsample_freq": 1,
+      "colsample_bytree": 0.5,
+      "reg_lambda": 10.0,
+      "n_estimators": 8000
+    },
+    "improvement_over_best_baseline_pct": 34.9,
+    "trained": "2026-10-18 17:36"
   },
   "daily": {
     "daily_seasonal": {

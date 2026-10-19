@@ -116,8 +116,10 @@ class Forecaster:
         if os.path.exists(path("forecast_xgb_sim.json")):
             fc.xgb_sim = booster("forecast_xgb_sim.json")
             sim_meta = meta.get("simulated_meter", {})
-            if sim_meta.get("model") == "lightgbm" and os.path.exists(path("forecast_lgb_sim.txt")):
-                lgb_model = _lightgbm(path("forecast_lgb_sim.txt"))
+            lgb_file = next((path(f) for f in ("forecast_lgb_sim.txt.gz", "forecast_lgb_sim.txt")
+                             if os.path.exists(path(f))), None)
+            if sim_meta.get("model") == "lightgbm" and lgb_file:
+                lgb_model = _lightgbm(lgb_file)
                 if lgb_model is not None:
                     fc.xgb_sim = lgb_model                  # same predict(X) interface
             fc.q05_sim, fc.q95_sim = unpickle("forecast_q05_sim.pkl"), unpickle("forecast_q95_sim.pkl")
@@ -249,6 +251,10 @@ class _LightGBMModel:
 def _lightgbm(file_path: str):
     try:
         import lightgbm
+        if file_path.endswith(".gz"):                   # stored compressed to keep the repo small
+            import gzip
+            with gzip.open(file_path, "rt", encoding="utf-8") as fh:
+                return _LightGBMModel(lightgbm.Booster(model_str=fh.read()))
         return _LightGBMModel(lightgbm.Booster(model_file=file_path))
     except Exception as exc:                            # fall back to the XGBoost model
         print(f"[forecast] {os.path.basename(file_path)} not loaded, using XGBoost: {exc}")

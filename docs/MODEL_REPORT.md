@@ -64,24 +64,55 @@ repeats this one.
 
 The live dashboard reads a **simulated** smart meter (an Indian home built from the user's own appliance
 list), not a physical meter. The UCI model above does not transfer to it, so it has its own model:
-XGBoost on power-only features (the same lags, same-hour history and rolling statistics; no sub-meter
-readings), trained on 80 simulated homes, early-stopped on 20
+LightGBM on power-only features (the same lags, same-hour history and rolling statistics; no sub-meter
+readings) plus what the app knows before the hour: the day's forecast temperature, the number of people, home size and which appliances the home has. XGBoost and LightGBM were both trained; the one with the lower error on the validation
+homes is used. Trained on 80 simulated homes, early-stopped on 20
 other homes and tested on 30 homes it never saw (different appliances, habits, sizes,
 cities and seasons; 38,130 test hours, mean 0.49 kW).
 
 | Model (unseen simulated homes) | MAE (kW) | RMSE (kW) | R² |
 |---|---|---|---|
-| XGBoost | 0.109 | 0.210 | 0.744 |
+| XGBoost | 0.108 | 0.208 | 0.749 |
+| LightGBM (used by the app) | 0.108 | 0.207 | 0.752 |
 | Baseline: next hour = this hour | 0.182 | 0.330 | 0.368 |
 | Baseline: mean of same hour, last 7 days | 0.166 | 0.275 | 0.562 |
 
-- **34% lower error** than the better of the two baselines.
-- 90% range coverage on the test homes: **88.2%** (target 90%; calibrated on the
+- **35% lower error** than the better of the two baselines.
+- 90% range coverage on the test homes: **88.1%** (target 90%; calibrated on the
   validation homes, so new homes come out slightly below target), average width 0.47 kW.
 - These are results on simulated data. They show the model learns the simulator's patterns; they are not
   a measurement of accuracy on a real home's meter.
 - The dashboard logs each forecast before its hour happens and fills in the actual afterwards
   (`forecast_log` table), so live accuracy and overconsumption alerts use the forecast that was really made.
+
+## Experiments: what else was tried
+
+`experiments.py` (2026-10-18) tried LightGBM, XGBoost + LightGBM blends, calendar features
+(French public holidays, time of year) on the real home, and weather and household context on the
+simulated meter. Choices were made on validation error only; test error is shown for the record.
+
+| Data | Model | Validation MAE (kW) | Test MAE (kW) |
+|---|---|---|---|
+| Real home | XGBoost, current features | 0.2985 | 0.2917 |
+| Real home | LightGBM, current features | 0.2974 | 0.2922 |
+| Real home | Blend 0.40 XGBoost + 0.60 LightGBM, current features | 0.2970 | 0.2911 |
+| Real home | XGBoost, + holidays and time of year | 0.2996 | 0.2911 |
+| Real home | LightGBM, + holidays and time of year | 0.2971 | 0.2919 |
+| Real home | Blend 0.10 XGBoost + 0.90 LightGBM, + holidays and time of year | 0.2971 | 0.2916 |
+| Simulated meter | XGBoost, meter only (current) | 0.0977 | 0.1100 |
+| Simulated meter | LightGBM, meter only (current) | 0.0962 | 0.1081 |
+| Simulated meter | Blend 0.15 XGBoost + 0.85 LightGBM, meter only (current) | 0.0962 | 0.1081 |
+| Simulated meter | XGBoost, + weather and home context | 0.0969 | 0.1088 |
+| Simulated meter | LightGBM, + weather and home context | 0.0954 | 0.1077 |
+| Simulated meter | Blend 0.15 XGBoost + 0.85 LightGBM, + weather and home context | 0.0953 | 0.1075 |
+| Simulated meter | Baseline: persistence | 0.1704 | 0.1825 |
+| Simulated meter | Baseline: same_hour_mean_7_days | 0.1445 | 0.1655 |
+
+Kept: LightGBM with weather and household context for the simulated meter (validation 0.0954 vs 0.0977
+for the previous XGBoost). Not kept: changes to the real-home model, whose best variant gained 0.5% on
+validation and 0.2% on test, too little to justify a second model there. (For speed, the
+simulated-meter XGBoost runs in this experiment used a learning rate of 0.05; the final training above
+compares XGBoost at its usual settings with LightGBM.)
 
 ## Bill forecast (energy over the next 30 days)
 
@@ -102,18 +133,18 @@ model, because this home's seasons (French winter heating) say nothing about ano
 
 ## Appliance scheduling (optimisation)
 
-- For each shiftable appliance run, every allowed start time (15-minute steps) is costed against the
-  time-of-day tariff, within the household's limits (quiet hours, allowed hours, how far ahead a geyser
-  may heat).
-- Appliances are planned together, biggest saving first, against each past day's actual load: a run is
-  moved only to a time where the home would have stayed under 85% of its sanctioned load on that day,
-  and each accepted move is added to that day's load before the next is planned.
+- The scheduler plans the way a sensible person would: one fixed time per daily habit (runs grouped by time
+  of day), the smallest change that keeps 90% of the best saving, and only directions that make sense
+  (a geyser or water pump only earlier, a geyser at most 2 hours earlier with its heat loss counted, a
+  washing machine at most 4 hours either way in waking hours).
+- Every allowed start time (15-minute steps) is costed against the time-of-day tariff. Appliances are
+  planned together against each past day's actual load; a run moves only where the home stays under 85%
+  of its sanctioned load that day.
 - Every plan is re-checked (`scheduler.validate_plan`): baseline vs optimised energy, cost and peak, and
-  every moved run against allowed hours, quiet hours, how far ahead it may run and the load cap. Moving a
-  run saves money, not energy; energy savings from the efficiency tips are estimates from BEE guidance
-  and are labelled as such.
-- Moves that are each too small to mention are offered together when they add up.
-- On a flat tariff no timing advice is given, because moving use saves nothing.
+  every moved run against all limits. Moving a run saves money, not energy; efficiency-tip savings are
+  estimates from BEE guidance and are labelled as such.
+- Small changes are offered together when they add up; on a flat tariff no timing advice is given.
+- See AUDIT.md section 6 for the measured comparison with the previous planner.
 
 ## Limits
 

@@ -94,3 +94,25 @@ def test_weather_and_household_context_reach_the_model():
     assert len(out) == len(s)
     # without context the model still answers (columns left empty), never a made-up value
     assert len(meter_hour_forecasts(fc, s)) == len(s)
+
+
+def test_saved_live_meter_model_is_the_one_the_report_names():
+    """The committed model loads as the type forecast_meta.json says was chosen (no silent fallback)."""
+    import json
+    import os
+    from forecast import _LightGBMModel
+    from paths import MODEL_DIR
+
+    meta_file = os.path.join(MODEL_DIR, "forecast_meta.json")
+    if not os.path.exists(os.path.join(MODEL_DIR, "forecast_xgb_sim.json")):
+        pytest.skip("live-meter model not trained")
+    chosen = json.load(open(meta_file)).get("simulated_meter", {}).get("model")
+    pytest.importorskip("xgboost")
+    if chosen == "lightgbm":
+        pytest.importorskip("lightgbm")
+    fc = Forecaster.load(use_lstm=False)
+    assert fc.xgb_sim is not None
+    assert isinstance(fc.xgb_sim, _LightGBMModel) == (chosen == "lightgbm")
+    n = fc.xgb_sim.booster.num_feature() if chosen == "lightgbm" else fc.xgb_sim.n_features_in_
+    pred = fc.xgb_sim.predict(np.zeros((2, n)))
+    assert len(pred) == 2 and np.all(np.isfinite(pred))
