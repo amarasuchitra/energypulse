@@ -29,7 +29,10 @@ def _new():
 
 
 def _ok(at):
-    assert not at.exception, [e.value for e in at.exception][:3]
+    if at.exception:
+        e = at.exception[0]
+        raise AssertionError(f"app error: {getattr(e, 'message', e.value)}\n"
+                             + "\n".join(getattr(e, "stack_trace", []) or [])[-3000:])
 
 
 def _email():

@@ -8,6 +8,8 @@ import tempfile
 os.environ.setdefault("ENERGYPULSE_DB", os.path.join(tempfile.mkdtemp(prefix="ep-test-"), "test.db"))
 os.environ.setdefault("ENERGYPULSE_NO_SCHEDULER", "1")
 os.environ.setdefault("ENERGYPULSE_DISABLE_LSTM", "1")
+# The deployed app hides error details from visitors; tests need to see them.
+os.environ.setdefault("STREAMLIT_CLIENT_SHOW_ERROR_DETAILS", "full")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for d in (os.path.join(ROOT, "frontend"), os.path.join(ROOT, "backend")):
