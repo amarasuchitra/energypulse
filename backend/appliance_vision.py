@@ -27,11 +27,31 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-REPO = "Xenova/clip-vit-base-patch32"
-FILES = {"vision": "onnx/vision_model_quantized.onnx", "text": "onnx/text_model_quantized.onnx",
-         "tokenizer": "tokenizer.json"}
+# Which CLIP to use, chosen by measured accuracy on real photos (tests/test_vision_eval.py).
+# ENERGYPULSE_CLIP="<repo>|<vision file>" overrides it (used by the test that compares sizes).
+MODELS = {
+    "base32": ("Xenova/clip-vit-base-patch32", "onnx/vision_model_quantized.onnx", "onnx/text_model_quantized.onnx"),
+    "base16": ("Xenova/clip-vit-base-patch16", "onnx/vision_model_quantized.onnx", "onnx/text_model_quantized.onnx"),
+    "large14": ("Xenova/clip-vit-large-patch14", "onnx/vision_model_quantized.onnx", "onnx/text_model_quantized.onnx"),
+    "large14q4": ("Xenova/clip-vit-large-patch14", "onnx/vision_model_q4.onnx", "onnx/text_model_quantized.onnx"),
+}
+DEFAULT_MODEL = "base32"
+REPO, FILES = "", {}
 CACHE_DIR = os.environ.get("ENERGYPULSE_MODEL_CACHE") or os.path.join(os.path.expanduser("~"), ".cache",
                                                                        "energypulse", "clip")
+
+
+def configure(name: Optional[str] = None) -> str:
+    """Pick the CLIP size (forgets anything loaded or worked out with the previous one)."""
+    global REPO, FILES
+    name = name or os.environ.get("ENERGYPULSE_CLIP") or DEFAULT_MODEL
+    repo, vision, text = MODELS.get(name, MODELS[DEFAULT_MODEL])
+    REPO, FILES = repo, {"vision": vision, "text": text, "tokenizer": "tokenizer.json"}
+    _SESS.clear()
+    _TEXT_CACHE.clear()
+    return name
+
+
 MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype="float32")
 STD = np.array([0.26862954, 0.26130258, 0.27577711], dtype="float32")
 SCALE = 100.0                 # CLIP's learned logit scale
@@ -131,7 +151,7 @@ _TEXT_CACHE: Dict[str, np.ndarray] = {}
 # ----------------------------------------------------------------- the model
 def _download(rel: str) -> str:
     """The model file in the local cache, downloaded from Hugging Face the first time."""
-    path = os.path.join(CACHE_DIR, rel.replace("/", "_"))
+    path = os.path.join(CACHE_DIR, REPO.replace("/", "_") + "__" + rel.replace("/", "_"))
     if os.path.exists(path) and os.path.getsize(path) > 0:
         return path
     import requests
@@ -147,16 +167,40 @@ def _download(rel: str) -> str:
     return path
 
 
-def _load():
-    if not _SESS:
+def _load(part: str = "vision"):
+    """The vision or the text half of CLIP (and the tokenizer), each loaded when first needed."""
+    if not FILES:
+        configure()
+    if part not in _SESS:
         import onnxruntime as ort
-        from tokenizers import Tokenizer
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = 2
-        _SESS["vision"] = ort.InferenceSession(_download(FILES["vision"]), opts, providers=["CPUExecutionProvider"])
-        _SESS["text"] = ort.InferenceSession(_download(FILES["text"]), opts, providers=["CPUExecutionProvider"])
-        _SESS["tok"] = Tokenizer.from_file(_download(FILES["tokenizer"]))
+        if part == "text":
+            from tokenizers import Tokenizer
+            _SESS["tok"] = Tokenizer.from_file(_download(FILES["tokenizer"]))
+        _SESS[part] = ort.InferenceSession(_download(FILES[part]), opts, providers=["CPUExecutionProvider"])
     return _SESS
+
+
+def release_text_model() -> None:
+    """Free the text half once every fixed description has been worked out (saves memory)."""
+    _SESS.pop("text", None)
+    _SESS.pop("tok", None)
+
+
+def all_fixed_texts() -> List[str]:
+    """Every description the app uses, so they can be worked out once at start."""
+    texts = [t for v in DESCRIPTIONS.values() for t in v] + NOT_APPLIANCE
+    texts += [t for v in VISUAL_CLASSES.values() for d in v.values() for t in d]
+    for key, brands in BRANDS.items():
+        t = key.replace("_", " ")
+        try:
+            import catalog
+            t = catalog.get_type(key).name.lower()
+        except Exception:
+            pass
+        texts += [x for b in brands for x in (f"a {b} {t}", f"the {b} logo on a {t}")]
+    return _phrasings(texts)
 
 
 def _unit(v: np.ndarray) -> np.ndarray:
@@ -172,7 +216,7 @@ def embed_texts(texts: List[str]) -> np.ndarray:
     """Unit-length CLIP embeddings for descriptions (cached per text)."""
     missing = [t for t in texts if t not in _TEXT_CACHE]
     if missing:
-        s = _load()
+        s = _load("text")
         enc = s["tok"].encode_batch(missing)
         ids = []
         for e in enc:
@@ -197,8 +241,7 @@ def embed_texts(texts: List[str]) -> np.ndarray:
     return np.stack([_TEXT_CACHE[t] for t in texts])
 
 
-def preprocess(data: bytes) -> np.ndarray:
-    """CLIP's own preparation: shortest side to 224, centre crop, scale, normalise, channels first."""
+def _open(data: bytes):
     import io
     from PIL import Image, ImageOps
     img = ImageOps.exif_transpose(Image.open(io.BytesIO(data)))
@@ -206,22 +249,54 @@ def preprocess(data: bytes) -> np.ndarray:
         img = img.convert("RGBA")
         back = Image.new("RGBA", img.size, (255, 255, 255, 255))
         img = Image.alpha_composite(back, img)
-    img = img.convert("RGB")
+    return img.convert("RGB")
+
+
+def _to_input(img) -> np.ndarray:
+    x = (np.asarray(img, dtype="float32") / 255.0 - MEAN) / STD
+    return x.transpose(2, 0, 1).astype("float32")
+
+
+def views(img) -> list:
+    """Several looks at one photo: the centre, the whole photo (padded, nothing cut off), a closer
+    centre, and the centre mirrored.  Averaging them is steadier than one crop."""
+    from PIL import Image, ImageOps
+    out = []
     w, h = img.size
     k = 224 / min(w, h)
-    img = img.resize((max(224, round(w * k)), max(224, round(h * k))), Image.BICUBIC)
-    w, h = img.size
-    left, top_ = (w - 224) // 2, (h - 224) // 2
-    img = img.crop((left, top_, left + 224, top_ + 224))
-    x = (np.asarray(img, dtype="float32") / 255.0 - MEAN) / STD
-    return x.transpose(2, 0, 1)[None].astype("float32")
+    big = img.resize((max(224, round(w * k)), max(224, round(h * k))), Image.BICUBIC)
+    bw, bh = big.size
+    centre = big.crop(((bw - 224) // 2, (bh - 224) // 2, (bw - 224) // 2 + 224, (bh - 224) // 2 + 224))
+    out.append(centre)
+    side = max(w, h)
+    pad = Image.new("RGB", (side, side), (255, 255, 255))
+    pad.paste(img, ((side - w) // 2, (side - h) // 2))
+    out.append(pad.resize((224, 224), Image.BICUBIC))
+    cw, ch = int(w * 0.8), int(h * 0.8)
+    close = img.crop(((w - cw) // 2, (h - ch) // 2, (w - cw) // 2 + cw, (h - ch) // 2 + ch))
+    k2 = 224 / min(close.size)
+    close = close.resize((max(224, round(close.width * k2)), max(224, round(close.height * k2))), Image.BICUBIC)
+    out.append(close.crop(((close.width - 224) // 2, (close.height - 224) // 2,
+                           (close.width - 224) // 2 + 224, (close.height - 224) // 2 + 224)))
+    out.append(ImageOps.mirror(centre))
+    return out
 
 
-def embed_image(data: bytes) -> np.ndarray:
-    s = _load()
-    x = preprocess(data)
+def preprocess(data: bytes, multi: bool = True) -> np.ndarray:
+    """CLIP's own preparation (resize, crop, normalise, channels first), for one or several views."""
+    img = _open(data)
+    vs = views(img) if multi else views(img)[:1]
+    return np.stack([_to_input(v) for v in vs])
+
+
+def embed_image(data: bytes, multi: bool = True) -> np.ndarray:
+    s = _load("vision")
+    x = preprocess(data, multi)
     name = s["vision"].get_inputs()[0].name
-    return _unit(_pick_output(s["vision"].run(None, {name: x}), s["vision"], "image_embeds"))[0]
+    vecs = []
+    for i in range(len(x)):                                 # one view at a time: lower peak memory
+        vecs.append(_unit(_pick_output(s["vision"].run(None, {name: x[i:i + 1]}), s["vision"], "image_embeds"))[0])
+    return _unit(np.mean(vecs, axis=0))
 
 
 def logo_text(data: bytes) -> str:
@@ -252,8 +327,9 @@ def warm_up() -> None:
 
     def run():
         try:
-            _load()
-            embed_texts(_phrasings([t for v in DESCRIPTIONS.values() for t in v] + NOT_APPLIANCE))
+            _load("vision")
+            embed_texts(all_fixed_texts())
+            release_text_model()                            # descriptions are kept; the text half is not needed
         except Exception:
             pass                                            # the first photo will try again and say why
     threading.Thread(target=run, name="clip-warm-up", daemon=True).start()
@@ -310,7 +386,8 @@ def model_numbers(text: str) -> List[str]:
     return seen[:3]
 
 
-def recognise(data: bytes, text: str = "", image_vec: Optional[np.ndarray] = None, embed=None) -> dict:
+def recognise(data: bytes, text: str = "", image_vec: Optional[np.ndarray] = None, embed=None,
+              multi_view: bool = True) -> dict:
     """
     {"types": [{"type_key","name","score","typical_w"}], "brand": {"name","source","score"} | None,
      "model_no": str | None, "why": str | None}.  `image_vec`/`embed` let tests pass stand-ins.
@@ -319,7 +396,7 @@ def recognise(data: bytes, text: str = "", image_vec: Optional[np.ndarray] = Non
     embed = embed or embed_texts
     try:
         if image_vec is None:
-            image_vec = embed_image(data)
+            image_vec = embed_image(data, multi_view)
     except Exception as exc:                                    # no onnxruntime, no download, bad file
         if isinstance(exc, (OSError, ValueError)) and "cannot identify image" in str(exc).lower():
             out["why"] = "This file could not be opened as a photo."
@@ -370,3 +447,6 @@ def recognise(data: bytes, text: str = "", image_vec: Optional[np.ndarray] = Non
     nums = model_numbers(text)
     out["model_no"] = nums[0] if nums else None
     return out
+
+
+configure()
