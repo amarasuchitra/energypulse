@@ -44,23 +44,23 @@ DESCRIPTIONS: Dict[str, List[str]] = {
            "a white wall-mounted AC unit", "a window air conditioner", "an air conditioner outdoor unit"],
     "fan": ["a ceiling fan with three blades", "a ceiling fan seen from below", "a ceiling fan hanging from the ceiling",
             "a pedestal fan", "a table fan", "a wall mounted fan"],
-    "cooler": ["a desert air cooler", "a plastic room air cooler with honeycomb pads", "an evaporative air cooler"],
+    "cooler": ["a swamp cooler", "a portable evaporative cooler with a fan and water tank", "a desert air cooler", "a plastic room air cooler with honeycomb pads", "an evaporative air cooler"],
     "fridge": ["a refrigerator", "a double door fridge", "a single door refrigerator in a kitchen"],
     "microwave": ["a microwave oven", "a microwave oven on a kitchen counter"],
     "induction": ["an induction cooktop", "an electric induction stove with a glass top"],
-    "kettle": ["an electric kettle", "a stainless steel electric kettle"],
-    "mixer": ["an Indian mixer grinder with jars", "a mixer grinder", "a kitchen blender"],
+    "kettle": ["a cordless electric kettle on its base", "a glass electric kettle boiling water", "an electric kettle", "a stainless steel electric kettle"],
+    "mixer": ["a blender with a glass jar", "an Indian mixer grinder with jars", "a mixer grinder", "a kitchen blender"],
     "otg": ["an oven toaster grill", "an OTG oven", "a small countertop electric oven"],
     "chimney": ["a kitchen chimney hood above a stove", "a kitchen exhaust hood"],
     "purifier": ["an RO water purifier mounted on a kitchen wall", "a water purifier with a tap"],
     "dishwasher": ["a dishwasher", "an open dishwasher with racks"],
-    "washing_machine": ["a front load washing machine", "a top load washing machine", "a semi automatic washing machine"],
-    "iron": ["an electric clothes iron", "a steam iron"],
-    "vacuum": ["a vacuum cleaner", "a canister vacuum cleaner"],
-    "geyser": ["an electric water heater geyser tank on a bathroom wall", "a geyser", "a storage water heater"],
+    "washing_machine": ["a washing machine in a laundry room", "a row of washing machines in a laundromat", "a front load washing machine", "a top load washing machine", "a semi automatic washing machine"],
+    "iron": ["a person ironing clothes on an ironing board", "an old vintage flat iron", "an electric clothes iron", "a steam iron"],
+    "vacuum": ["an upright vacuum cleaner", "a robot vacuum cleaner on the floor", "a handheld cordless vacuum cleaner", "a person vacuuming a carpet", "a vacuum cleaner", "a canister vacuum cleaner"],
+    "geyser": ["a tall cylindrical water heater tank standing on the floor", "a hot water cylinder boiler", "an electric water heater geyser tank on a bathroom wall", "a geyser", "a storage water heater"],
     "water_pump": ["an electric water pump motor", "a monoblock water pump", "a submersible pump motor"],
-    "heater": ["a room heater", "an electric fan heater", "an oil filled radiator heater"],
-    "tv": ["a television", "a flat screen TV on a wall", "an LED TV"],
+    "heater": ["a portable space heater", "a room heater", "an electric fan heater", "an oil filled radiator heater"],
+    "tv": ["a television in a living room", "an old CRT television set", "a TV on a stand", "a television", "a flat screen TV on a wall", "an LED TV"],
     "settop": ["a DTH set-top box", "a TV set top box with a remote"],
     "speaker": ["a sound bar", "a speaker", "a home theatre speaker system"],
     "router": ["a Wi-Fi router with antennas", "a wireless router", "a broadband modem"],
@@ -315,10 +315,11 @@ def recognise(data: bytes, text: str = "", image_vec: Optional[np.ndarray] = Non
     probs = classify(image_vec, groups, embed)
     import catalog
     ranked = sorted(((k, v) for k, v in probs.items()), key=lambda kv: -kv[1])
-    if ranked[0][0] == "_none":
+    best_type = next(((k, v) for k, v in ranked if k != "_none"), (None, 0.0))
+    if ranked[0][0] == "_none" and best_type[1] < MIN_TYPE:
         out["why"] = "This does not look like a photo of an appliance. Take a photo of the appliance itself."
         return out
-    if ranked[0][1] < MIN_TYPE:
+    if best_type[1] < MIN_TYPE:
         out["why"] = ("The app could not tell which appliance this is. Take a clearer photo of the whole "
                       "appliance in good light, or pick it from the list.")
         return out

@@ -86,7 +86,7 @@ def test_recognition_accuracy_on_real_photos(metric):
                "per_type": {k: f"{sum(r['top'] == k for r in v)}/{len(v)}" for k, v in results.items()},
                "searches": used}
     metric("vision_eval", summary)
-    metric("vision_eval_detail", {k: [(r["file"][5:60], r["top"], r["score"], r["class"]) for r in v]
-                                  for k, v in results.items()})
+    metric("vision_eval_misses", [f"{k} <- {r['top']} {r['score']} | {r['file'][5:50]}"
+                                  for k, v in results.items() for r in v if r["top"] != k])
     assert n >= 30, summary                      # enough photos were reachable to judge
     assert top1 / n >= 0.60, summary
