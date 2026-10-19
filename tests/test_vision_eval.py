@@ -75,7 +75,7 @@ def test_recognition_accuracy_on_real_photos(metric):
                 continue
             r = V.recognise(data)
             got = [g["type_key"] for g in r["types"]]
-            rows.append({"file": title, "top": got[0] if got else None, "top3": key in got,
+            rows.append({"file": title, "top": got[0] if got else None, "top3": key in got, "why": r.get("scores"),
                          "score": r["types"][0]["score"] if got else None, "class": (r.get("model_class") or {}).get("label")})
         results[key] = rows
     n = sum(len(v) for v in results.values())
@@ -86,7 +86,8 @@ def test_recognition_accuracy_on_real_photos(metric):
                "per_type": {k: f"{sum(r['top'] == k for r in v)}/{len(v)}" for k, v in results.items()},
                "searches": used}
     metric("vision_eval", summary)
-    metric("vision_eval_misses", [f"{k} <- {r['top']} {r['score']} | {r['file'][5:50]}"
+    metric("vision_tokens", V._SESS.get("tokens_seen"))
+    metric("vision_eval_misses", [f"{k} <- {r['top']} {r['score']} {r['why']} | {r['file'][5:40]}"
                                   for k, v in results.items() for r in v if r["top"] != k])
     assert n >= 30, summary                      # enough photos were reachable to judge
     assert top1 / n >= 0.60, summary

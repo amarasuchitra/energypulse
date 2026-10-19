@@ -35,6 +35,7 @@ CACHE_DIR = os.environ.get("ENERGYPULSE_MODEL_CACHE") or os.path.join(os.path.ex
 MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype="float32")
 STD = np.array([0.26862954, 0.26130258, 0.27577711], dtype="float32")
 SCALE = 100.0                 # CLIP's learned logit scale
+BOS, EOS = 49406, 49407       # CLIP's start- and end-of-text tokens
 MIN_TYPE = 0.25               # the best type must reach this, or the app says it is not sure
 MIN_SHOW_OTHER = 0.10         # other likely types listed only above this
 NONE_VETO = 0.50              # "not an appliance" must beat all appliances together by this much
@@ -173,7 +174,15 @@ def embed_texts(texts: List[str]) -> np.ndarray:
     if missing:
         s = _load()
         enc = s["tok"].encode_batch(missing)
-        ids = [e.ids[:77] for e in enc]
+        ids = []
+        for e in enc:
+            i = list(e.ids)
+            if not i or i[0] != BOS:                        # CLIP reads the sentence between these two marks
+                i = [BOS] + i
+            if i[-1] != EOS:
+                i = i + [EOS]
+            ids.append(i[:76] + [EOS] if len(i) > 77 else i)
+        _SESS["tokens_seen"] = ids[0]
         width = max(len(i) for i in ids)
         input_ids = np.full((len(ids), width), 49407, dtype="int64")      # CLIP pads with its end token
         mask = np.zeros((len(ids), width), dtype="int64")
@@ -192,7 +201,12 @@ def preprocess(data: bytes) -> np.ndarray:
     """CLIP's own preparation: shortest side to 224, centre crop, scale, normalise, channels first."""
     import io
     from PIL import Image, ImageOps
-    img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(data)))
+    if img.mode in ("RGBA", "LA", "P"):                     # a transparent background becomes white, not black
+        img = img.convert("RGBA")
+        back = Image.new("RGBA", img.size, (255, 255, 255, 255))
+        img = Image.alpha_composite(back, img)
+    img = img.convert("RGB")
     w, h = img.size
     k = 224 / min(w, h)
     img = img.resize((max(224, round(w * k)), max(224, round(h * k))), Image.BICUBIC)
@@ -318,6 +332,7 @@ def recognise(data: bytes, text: str = "", image_vec: Optional[np.ndarray] = Non
     import catalog
     ranked = sorted(probs.items(), key=lambda kv: -kv[1])
     veto = classify(image_vec, {"_none": NOT_APPLIANCE, ranked[0][0]: DESCRIPTIONS[ranked[0][0]]}, embed)
+    out["scores"] = {"top": [(k, round(v, 3)) for k, v in ranked[:3]], "not_appliance": round(veto["_none"], 3)}
     if veto["_none"] > NONE_VETO:
         out["why"] = "This does not look like a photo of an appliance. Take a photo of the appliance itself."
         return out
