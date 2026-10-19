@@ -41,3 +41,5 @@ onnxruntime>=1.17,<2
 tokenizers>=0.15,<1
 opencv-python-headless>=4.8,<5
 pypdf>=4.0,<6
+# Permanent storage of the database in Postgres (Neon) when DATABASE_URL is set
+psycopg2-binary>=2.9

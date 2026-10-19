@@ -19,6 +19,15 @@ for _dir in (os.path.join(_ROOT, "frontend"), os.path.join(_ROOT, "backend")):
     if _dir not in sys.path:
         sys.path.insert(0, _dir)
 
+# Bring back the saved database (DATABASE_URL, e.g. Neon) before anything opens it; see cloud_store.py.
+if not os.environ.get("ENERGYPULSE_DB"):
+    try:
+        import cloud_store as _cloud_store
+        from paths import DB_PATH as _DB_PATH
+        _cloud_store.start(_DB_PATH)
+    except Exception:                      # storage must never stop the app from starting
+        pass
+
 import copy
 import calendar as cal
 import io
