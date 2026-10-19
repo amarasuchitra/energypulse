@@ -36,7 +36,7 @@ MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype="float32")
 STD = np.array([0.26862954, 0.26130258, 0.27577711], dtype="float32")
 SCALE = 100.0                 # CLIP's learned logit scale
 BOS, EOS = 49406, 49407       # CLIP's start- and end-of-text tokens
-MIN_TYPE = 0.25               # the best type must reach this, or the app says it is not sure
+MIN_TYPE = 0.20               # the best type must reach this, or the app says it is not sure
 MIN_SHOW_OTHER = 0.10         # other likely types listed only above this
 NONE_VETO = 0.50              # "not an appliance" must beat all appliances together by this much
 MIN_BRAND, BRAND_MARGIN = 0.35, 0.15
@@ -58,9 +58,9 @@ DESCRIPTIONS: Dict[str, List[str]] = {
     "purifier": ["an RO water purifier mounted on a kitchen wall", "a water purifier with a tap"],
     "dishwasher": ["a dishwasher", "an open dishwasher with racks"],
     "washing_machine": ["a washing machine in a laundry room", "a row of washing machines in a laundromat", "a front load washing machine", "a top load washing machine", "a semi automatic washing machine"],
-    "iron": ["a person ironing clothes on an ironing board", "an old vintage flat iron", "an electric clothes iron", "a steam iron"],
+    "iron": ["a modern steam iron with a pointed soleplate", "an iron for pressing clothes with a handle and a cord", "a person ironing clothes on an ironing board", "an old vintage flat iron", "an electric clothes iron", "a steam iron"],
     "vacuum": ["an upright vacuum cleaner", "a robot vacuum cleaner on the floor", "a handheld cordless vacuum cleaner", "a person vacuuming a carpet", "a vacuum cleaner", "a canister vacuum cleaner"],
-    "geyser": ["a tall cylindrical water heater tank standing on the floor", "a hot water cylinder boiler", "an electric water heater geyser tank on a bathroom wall", "a geyser", "a storage water heater"],
+    "geyser": ["a white electric water heater with a temperature dial", "a tall cylindrical water heater tank standing on the floor", "a hot water cylinder boiler", "an electric water heater geyser tank on a bathroom wall", "a geyser", "a storage water heater"],
     "water_pump": ["an electric water pump motor", "a monoblock water pump", "a submersible pump motor"],
     "heater": ["a portable space heater", "a room heater", "an electric fan heater", "an oil filled radiator heater"],
     "tv": ["a television in a living room", "an old CRT television set", "a TV on a stand", "a television", "a flat screen TV on a wall", "an LED TV"],

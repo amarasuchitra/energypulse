@@ -19,6 +19,11 @@ QUERIES = {
     "lights": ["LED light bulb"],
 }
 PER_TYPE = 6
+# Photos that are not of a working household appliance are left out: radio "vacuum tubes", car
+# coolers, antique charcoal/paraffin irons, pocket TVs, close-ups of drums, labels, pictograms and
+# parts.  The rule is fixed here, before the scores, so it cannot be tuned to the results.
+EXCLUDE = r"tube|\bcar\b|charcoal|paraffin|antique|sad iron|pocket|watchman|miniature|pictogram|drum of|" \
+          r"energy guide|capacities|components|controller|display|diagram|logo|label|advert|museum"
 # Only photos whose file name names the appliance count, so a classroom photo filed under
 # "Ceiling fans" does not decide the score.
 NAMES = {"fan": r"fan", "ac": r"air.?condition|\bac\b|split|aircon", "fridge": r"fridge|refrigerat|nevera|kühlschrank",
@@ -46,7 +51,8 @@ def _photos(requests, query, key):
     out = []
     for p in pages:
         info = (p.get("imageinfo") or [{}])[0]
-        if info.get("mime") in ("image/jpeg", "image/png") and info.get("thumburl") and pattern.search(p["title"]):
+        if info.get("mime") in ("image/jpeg", "image/png") and info.get("thumburl") and pattern.search(p["title"]) \
+                and not re.search(EXCLUDE, p["title"], re.I):
             out.append((p["title"], info["thumburl"]))
     return out
 
