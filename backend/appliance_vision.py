@@ -257,6 +257,10 @@ def recognise(data: bytes, text: str = "", image_vec: Optional[np.ndarray] = Non
     if ranked[0][0] == "_none":
         out["why"] = "This does not look like a photo of an appliance. Take a photo of the appliance itself."
         return out
+    if ranked[0][1] < MIN_TYPE:
+        out["why"] = ("The app could not tell which appliance this is. Take a clearer photo of the whole "
+                      "appliance in good light, or pick it from the list.")
+        return out
     for k, v in ranked:
         if k == "_none" or v < MIN_TYPE and out["types"]:
             continue

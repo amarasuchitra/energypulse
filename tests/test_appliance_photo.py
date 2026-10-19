@@ -31,14 +31,20 @@ def test_one_sign_alone_is_not_enough():
 
 
 # ------------------------------------------------------------------ deciding (stand-in embeddings)
-def _fake_world():
-    """Every description gets its own random direction; an image 'is' whichever texts we point it at."""
+def _fake_world(tie=()):
+    """Every description gets its own random direction; an image 'is' whichever texts we point it at.
+    Descriptions naming a brand in `tie` all share one direction, so none of those brands can win."""
     rng = np.random.default_rng(0)
     cache = {}
+    shared = rng.normal(size=64)
 
     def embed(texts):
         for t in texts:
-            if t not in cache:
+            if t in cache:
+                continue
+            if any(f" {b} " in f" {t} " for b in tie):
+                cache[t] = shared / np.linalg.norm(shared)
+            else:
                 v = rng.normal(size=64)
                 cache[t] = v / np.linalg.norm(v)
         return np.stack([cache[t] for t in texts])
@@ -82,8 +88,9 @@ def test_brand_from_the_look_only_when_it_clearly_wins():
     img = like(*V.DESCRIPTIONS["ac"], f"a Daikin {name}", f"the Daikin logo on a {name}")
     r = V.recognise(b"", image_vec=img, embed=embed)
     assert r["types"][0]["type_key"] == "ac" and r["brand"]["name"] == "Daikin" and r["brand"]["source"] == "logo or look"
-    plain = V.recognise(b"", image_vec=like(*V.DESCRIPTIONS["ac"]), embed=embed)
-    assert plain["brand"] is None                                 # no clear winner: no brand claimed
+    embed2, like2 = _fake_world(tie=V.BRANDS["ac"])
+    plain = V.recognise(b"", image_vec=like2(*V.DESCRIPTIONS["ac"]), embed=embed2)
+    assert plain["types"][0]["type_key"] == "ac" and plain["brand"] is None    # no clear winner: none claimed
 
 
 def test_longest_brand_name_wins_and_numbers_are_not_models():
@@ -125,4 +132,4 @@ def test_real_clip_refuses_a_page_of_text(metric):
     if r["why"] and "not available" in r["why"]:
         pytest.skip(r["why"])
     metric("clip_text_page", r)
-    assert not r["types"] or r["types"][0]["score"] < 0.5, r
+    assert r["types"] == [] and r["why"], r
