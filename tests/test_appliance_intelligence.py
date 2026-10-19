@@ -236,7 +236,7 @@ def test_accounts_only_let_the_owner_in(tmp_path, monkeypatch):
     # repeated wrong passwords lock the account, even for the right password
     for _ in range(auth.MAX_FAILURES):
         accounts.sign_in("amara@example.com", "wrong", now=1000.0)
-    assert "Too many" in accounts.sign_in("amara@example.com", "Correct-Horse 9", now=1001.0)[1]
+    assert "locked" in accounts.sign_in("amara@example.com", "Correct-Horse 9", now=1001.0)[1]
     assert accounts.sign_in("amara@example.com", "Correct-Horse 9", now=1000.0 + auth.LOCK_SECONDS + 1)[0]
 
     # guests are private, sessions end, stored files are unreadable without the key

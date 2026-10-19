@@ -1019,13 +1019,24 @@ def render_reset_form(auth: dict) -> None:
                             st.error("Password reset needs email, which is not set up on this server. "
                                      "Ask the administrator to reset your password.")
                         else:
-                            code = get_accounts().request_reset(email)
-                            if code:
-                                service.send_reset_code(Accounts.normalise(email), code, RESET_SECONDS // 60)
-                            # Same answer whether or not the email has an account.
-                            st.success("If that email has an account, a code is on its way. "
-                                       "Check your inbox (and spam folder).")
-                            auth["reset_email"] = Accounts.normalise(email)
+                            em = Accounts.normalise(email)
+                            if not get_accounts().exists(em):
+                                st.error(f"There is no account for {em}. Check the spelling, or go back "
+                                         "and create an account.")
+                            else:
+                                code = get_accounts().request_reset(em)
+                                if not code:
+                                    st.error("You have asked for 3 codes in the last hour. Use the newest code "
+                                             "you received, or try again later.")
+                                else:
+                                    sent, err = service.send_reset_code(em, code, RESET_SECONDS // 60)
+                                    if sent:
+                                        st.success(f"A code has been emailed to {em}. Check your inbox and spam "
+                                                   f"folder; it works for {RESET_SECONDS // 60} minutes.")
+                                        auth["reset_email"] = em
+                                    else:
+                                        st.error("The code could not be emailed: " + (err or "the mail server "
+                                                 "refused it") + ". Try again in a minute.")
                 except Exception as exc:
                     log.error("Password reset request failed: %s", type(exc).__name__)
                     st.error("Password reset is not available just now. Please try again later.")
@@ -1101,54 +1112,75 @@ def render_login_screen():
             remember = st.checkbox(T("remember_me"), value=True, key="login_remember")
             btn_label = T("btn_create_account") if is_signup else T("btn_sign_in")
             submitted = st.form_submit_button(btn_label, width="stretch", type="primary")
+            failure = None                      # (message, code) shown under the form
             if submitted:
                 problems = (validate_signup_form(name, email, password, confirm, terms) if is_signup
                             else validate_login_form(email, password))
                 if problems:
-                    for p in problems:
-                        st.error(p)
-                    return False
-                try:
-                    with st.spinner("Creating your account..." if is_signup else "Signing in..."):
-                        accounts = get_accounts()
-                        ok, result = (accounts.sign_up(email, password, name, terms_version=TERMS_VERSION)
-                                      if is_signup else accounts.sign_in(email, password))
-                except Exception as exc:
-                    log.error("Sign-in service failed: %s", type(exc).__name__)
-                    st.error("Signing in is not available just now. Please try again in a minute.")
-                    return False
-                if not ok:
-                    st.error(result)
-                    return False
-                email = accounts.normalise(email)
-                auth.update({"logged_in": True, "email": email, "name": result,
-                             "guest": False, "signed_in_at": time.time(), "remember": False})
-                if remember:
-                    token = accounts.issue_token(email)
-                    auth.update({"remember": True, "token": token})
-                    st.session_state["_set_cookie"] = token
-                household = ensure_login(email, name=result)
-                saved_home = None if is_signup else get_db().get_home_details(household)
-                if saved_home:
-                    st.session_state.home_details = saved_home      # straight to their own home
-                notify("success", f"Account created. Welcome, {result}." if is_signup else f"Signed in as {result}.")
-                st.rerun()
+                    failure = ("\n".join(f"- {p}" for p in problems), "form")
+                else:
+                    try:
+                        with st.spinner("Creating your account..." if is_signup else "Signing in..."):
+                            accounts = get_accounts()
+                            if is_signup:
+                                ok, result = accounts.sign_up(email, password, name, terms_version=TERMS_VERSION)
+                                code = None if ok else ("exists" if "already exists" in result else "signup")
+                            else:
+                                ok, result, code = accounts.sign_in_detail(email, password)
+                    except Exception as exc:
+                        log.error("Sign-in service failed: %s", type(exc).__name__)
+                        ok, result, code = False, ("The account service could not be reached, so nothing was "
+                                                   "checked. This is a problem on our side, not your details: "
+                                                   "try again in a minute."), "service"
+                    if not ok:
+                        failure = (result, code)
+                    else:
+                        email = accounts.normalise(email)
+                        auth.update({"logged_in": True, "email": email, "name": result,
+                                     "guest": False, "signed_in_at": time.time(), "remember": False})
+                        auth.pop("failure", None)
+                        if remember:
+                            token = accounts.issue_token(email)
+                            auth.update({"remember": True, "token": token})
+                            st.session_state["_set_cookie"] = token
+                        household = ensure_login(email, name=result)
+                        saved_home = None if is_signup else get_db().get_home_details(household)
+                        if saved_home:
+                            st.session_state.home_details = saved_home      # straight to their own home
+                        notify("success", f"Account created. Welcome, {result}." if is_signup
+                               else f"Signed in as {result}.")
+                        st.rerun()
+            if failure:
+                auth["failure"] = failure
+        failure = auth.get("failure") if not auth.get("logged_in") else None
+        if failure:
+            message, code = failure
+            st.error(message)
+            if code == "no_account" and not is_signup:
+                if st.button("Create an account with this email", type="primary", width="stretch",
+                             key="fail_to_signup"):
+                    auth["mode"], auth["failure"] = "signup", None
+                    st.rerun()
+            elif code == "exists" and is_signup:
+                if st.button("Sign in instead", type="primary", width="stretch", key="fail_to_login"):
+                    auth["mode"], auth["failure"] = "login", None
+                    st.rerun()
         if is_signup:
             with st.expander("Terms of Use and Privacy Policy"):
                 st.markdown(TERMS_TEXT)
         else:
             if st.button("Forgot password?", key="forgot_pw", type="tertiary"):
-                auth["mode"] = "reset"
+                auth["mode"], auth["failure"] = "reset", None
                 st.rerun()
 
         st.markdown(f'<div class="login-divider">{T("divider_or")}</div>', unsafe_allow_html=True)
         if is_signup:
             if st.button(T("switch_to_login"), width="stretch", key="switch_login"):
-                auth["mode"] = "login"
+                auth["mode"], auth["failure"] = "login", None
                 st.rerun()
         else:
             if st.button(T("switch_to_signup"), width="stretch", key="switch_signup"):
-                auth["mode"] = "signup"
+                auth["mode"], auth["failure"] = "signup", None
                 st.rerun()
         st.markdown("")
         if st.button(T("btn_guest"), width="stretch", key="guest_btn"):

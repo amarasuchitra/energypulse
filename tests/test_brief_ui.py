@@ -158,8 +158,13 @@ def test_sign_in_form_validates_and_refuses_wrong_details():
     _submit(at, "Sign In")
     assert any("Enter your email" in e.value for e in at.error)
     _sign_in(at, "nobody@example.com", PW)
-    assert any("email or password is not right" in e.value for e in at.error)
+    assert any("no account for nobody@example.com" in e.value for e in at.error)
     assert not at.session_state["auth"].get("logged_in")
+    # The way on is offered right there, and the other links stay visible after an error.
+    keys = {b.key for b in at.button}
+    assert {"fail_to_signup", "forgot_pw", "switch_signup"} <= keys
+    at.button(key="fail_to_signup").click().run()
+    assert at.text_input(key="login_name") and at.text_input(key="login_email").value == "nobody@example.com"
 
 
 @pytest.mark.brief("AUTH-017")

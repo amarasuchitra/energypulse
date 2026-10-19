@@ -77,18 +77,20 @@ def test_login_with_valid_credentials(acc):
 
 
 @pytest.mark.brief("AUTH-008")
-def test_wrong_password_is_denied(acc):
+def test_wrong_password_is_denied_with_tries_left(acc):
     acc.sign_up("amara@example.com", PW, "Amara")
-    ok, msg = acc.sign_in("amara@example.com", PW + "x")
-    assert not ok and msg == "The email or password is not right."
+    ok, msg, code = acc.sign_in_detail("amara@example.com", PW + "x")
+    assert not ok and code == Accounts.WRONG_PASSWORD
+    assert "Wrong password" in msg and f"{MAX_FAILURES - 1} tries left" in msg and "Forgot password" in msg
 
 
 @pytest.mark.brief("AUTH-009")
-def test_unknown_email_gets_the_same_answer_as_a_wrong_password(acc):
-    acc.sign_up("amara@example.com", PW, "Amara")
-    wrong_pw = acc.sign_in("amara@example.com", "Wrong-Pass-123")
-    unknown = acc.sign_in("nobody@example.com", PW)
-    assert wrong_pw == unknown == (False, "The email or password is not right.")
+def test_unknown_email_is_told_to_create_an_account(acc):
+    ok, msg, code = acc.sign_in_detail("nobody@example.com", PW)
+    assert not ok and code == Accounts.NO_ACCOUNT
+    assert "no account for nobody@example.com" in msg and "create an account" in msg
+    ok, msg, code = acc.sign_in_detail("not-an-email", PW)
+    assert not ok and code == Accounts.INVALID_EMAIL and "not a valid email" in msg
 
 
 @pytest.mark.brief("AUTH-010")
@@ -118,22 +120,24 @@ def test_script_in_name_is_stripped_before_storing(acc):
 
 
 @pytest.mark.brief("AUTH-012")
-def test_repeated_failures_lock_the_email_then_it_unlocks(acc):
+def test_repeated_failures_lock_the_account_then_it_unlocks(acc):
     acc.sign_up("amara@example.com", PW, "Amara")
-    for _ in range(MAX_FAILURES):
-        acc.sign_in("amara@example.com", "Wrong-Pass-123", now=1000.0)
-    ok, msg = acc.sign_in("amara@example.com", PW, now=1001.0)          # even the right password waits
-    assert not ok and "Too many" in msg
+    for i in range(MAX_FAILURES):
+        ok, msg, code = acc.sign_in_detail("amara@example.com", "Wrong-Pass-123", now=1000.0)
+    assert code == Accounts.LOCKED and "locked for 5 minutes" in msg          # the 5th wrong try says so
+    ok, msg, code = acc.sign_in_detail("amara@example.com", PW, now=1001.0)   # even the right password waits
+    assert not ok and code == Accounts.LOCKED and "5 more minute(s)" in msg
     assert acc.sign_in("amara@example.com", PW, now=1000.0 + LOCK_SECONDS + 1)[0]
 
 
-@pytest.mark.brief("AUTH-012", "AUTH-009", "SEC-003")
-def test_lockout_does_not_reveal_whether_an_account_exists(acc):
-    acc.sign_up("amara@example.com", PW, "Amara")
-    for email in ("amara@example.com", "nobody@example.com"):
-        for _ in range(MAX_FAILURES):
-            acc.sign_in(email, "Wrong-Pass-123", now=1000.0)
-    assert acc.sign_in("amara@example.com", "x", now=1001.0) == acc.sign_in("nobody@example.com", "x", now=1001.0)
+@pytest.mark.brief("AUTH-012", "SEC-003")
+def test_unknown_emails_are_never_counted_or_locked(acc):
+    for _ in range(MAX_FAILURES + 2):
+        ok, msg, code = acc.sign_in_detail("nobody@example.com", "x", now=1000.0)
+    assert code == Accounts.NO_ACCOUNT                                       # still told to create one
+    import sqlite3
+    with sqlite3.connect(acc.db_path) as c:
+        assert c.execute("SELECT COUNT(*) FROM login_throttle").fetchone()[0] == 0
 
 
 @pytest.mark.brief("AUTH-015", "AUTH-016", "SEC-004")
@@ -194,7 +198,7 @@ def test_expired_reset_code_is_rejected(acc):
     acc.sign_up("amara@example.com", PW, "Amara")
     code = acc.request_reset("amara@example.com", now=0.0)
     ok, msg = acc.reset_password("amara@example.com", code, NEW_PW, now=RESET_SECONDS + 1)
-    assert not ok and "expired" in msg
+    assert not ok and "expired" in msg and "Ask for a new code" in msg
     assert acc.sign_in("amara@example.com", PW)[0]
 
 
@@ -203,7 +207,8 @@ def test_reset_code_works_only_once(acc):
     acc.sign_up("amara@example.com", PW, "Amara")
     code = acc.request_reset("amara@example.com", now=0.0)
     assert acc.reset_password("amara@example.com", code, NEW_PW, now=1.0)[0]
-    assert not acc.reset_password("amara@example.com", code, "An0ther-Good-Pass", now=2.0)[0]
+    ok, msg = acc.reset_password("amara@example.com", code, "An0ther-Good-Pass", now=2.0)
+    assert not ok and "already been used" in msg
     assert acc.sign_in("amara@example.com", NEW_PW)[0]
 
 
@@ -294,3 +299,18 @@ def test_simultaneous_signups_for_one_email_create_one_account(acc):
 def test_odd_sign_in_cookies_are_refused_without_crashing(acc, token):
     assert acc.check_token(token) is None
     acc.revoke_token(token)                                             # no error either
+
+
+@pytest.mark.brief("AUTH-017", "AUTH-019")
+def test_reset_errors_say_exactly_what_is_wrong(acc):
+    assert "no account" in acc.reset_password("nobody@example.com", "ABCDEFGH", NEW_PW)[1]
+    acc.sign_up("amara@example.com", PW, "Amara")
+    assert "No reset code was asked" in acc.reset_password("amara@example.com", "ABCDEFGH", NEW_PW)[1]
+    acc.request_reset("amara@example.com", now=0.0)
+    msg = acc.reset_password("amara@example.com", "WRONGCOD", NEW_PW, now=1.0)[1]
+    assert "code is wrong" in msg and "4 tries left" in msg
+    for _ in range(4):
+        msg = acc.reset_password("amara@example.com", "WRONGCOD", NEW_PW, now=1.0)[1]
+    assert "No tries left" in msg
+    assert "typed wrong 5 times" in acc.reset_password("amara@example.com", "WRONGCOD", NEW_PW, now=2.0)[1]
+    assert "8-character code" in acc.reset_password("amara@example.com", "", NEW_PW)[1]
