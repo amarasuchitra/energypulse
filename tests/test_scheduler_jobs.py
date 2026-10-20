@@ -58,8 +58,18 @@ def test_daily_brief_is_sent_once_per_day(tmp_path):
     assert again["sent"] == 0 and again["skipped"] == 1
 
 
-def test_weekly_summary_uses_saved_meter_readings(tmp_path):
+def test_weekly_summary_uses_the_households_simulated_meter(tmp_path, monkeypatch):
     db = _db(tmp_path)
+    monkeypatch.setattr(jobs, "household_meter_hourly", lambda home: _history() if home else None)
+    svc = FakeService()
+    result = jobs.send_weekly_summaries(db=db, service=svc)
+    assert result == {"sent": 1, "skipped": 0, "failed": 0}
+    assert abs(svc.weekly[0]["week_kwh"] - 7 * 24) < 25      # about one kW for a week
+
+
+def test_weekly_summary_falls_back_to_saved_meter_readings(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    monkeypatch.setattr(jobs, "household_meter_hourly", lambda home: None)
     db.save_simulation_history("hh1", _history())
     svc = FakeService()
     result = jobs.send_weekly_summaries(db=db, service=svc)

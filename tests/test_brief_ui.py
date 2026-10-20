@@ -354,7 +354,7 @@ def test_edit_appliances_opens_the_setup_picker_with_saved_items_selected():
     groups = _pills(at)
     if groups:                                                               # the picker shows what is saved
         chosen = [v for g in groups for v in (g.value or [])]
-        assert "Air conditioner" in chosen and any("ridge" in str(v) for v in chosen)
+        assert "Air conditioner" in chosen and "Refrigerator" in chosen
 
 
 @pytest.mark.brief("EDIT-004", "EDIT-007")
