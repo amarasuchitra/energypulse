@@ -80,6 +80,26 @@ def meter_history(db, household_id: str):
     return df
 
 
+def household_meter_hourly(home: dict):
+    """
+    The household's simulated main meter, hourly, up to the last finished hour on its own clock:
+    the same readings the dashboard, the live alerts and the forecasts use.  None when not set up.
+    """
+    from zoneinfo import ZoneInfo
+
+    from clock import DEFAULT_TZ, valid
+    from data_source import meter_hourly
+    from meter_source import SCENARIOS, detected_history, owned_appliances, with_habits
+    if not home:
+        return None
+    tz = home.get("timezone") if valid(home.get("timezone")) else DEFAULT_TZ
+    now = pd.Timestamp.now(tz=ZoneInfo(tz)).tz_localize(None)
+    owned = owned_appliances(home)
+    minute_df = detected_history(str(now.date()), with_habits(list(SCENARIOS)[0], home), owned)
+    hourly = meter_hourly(minute_df, now)
+    return hourly if not hourly.empty else None
+
+
 # ----------------------------------------------------------------- jobs
 def run_daily_briefs(db=None, service=None, date: Optional[str] = None) -> Dict[str, int]:
     """Build and send today's brief for every household. Returns counts."""
@@ -146,23 +166,35 @@ def check_bill_alerts(db=None, forecast_df=None) -> Dict[str, int]:
     if db is None:
         from db import get_db
         db = get_db()
-    if forecast_df is None:
-        forecast_df = _forecast_for_alerts()
-    if forecast_df is None or forecast_df.empty:
-        print("Forecast not available, skipping bill alerts")
-        return {"checked": 0, "failed": 0}
-    counts = {"checked": 0, "failed": 0}
-    # Only the calendar month after the newest reading counts as "next month".
     from forecast import month_slice
-    newest = pd.Timestamp.now() if forecast_df.empty else pd.to_datetime(forecast_df["datetime"]).min()
-    nxt = newest.normalize().replace(day=1) + pd.DateOffset(months=1)
-    month_df = month_slice(forecast_df, nxt.year, nxt.month)
-    if month_df.empty:
-        month_df = forecast_df
+
+    def next_month(fdf):
+        # Only the calendar month after the newest reading counts as "next month".
+        newest = pd.to_datetime(fdf["datetime"]).min()
+        nxt = newest.normalize().replace(day=1) + pd.DateOffset(months=1)
+        part = month_slice(fdf, nxt.year, nxt.month)
+        return part if not part.empty else fdf
+
+    shared = next_month(forecast_df) if forecast_df is not None and not forecast_df.empty else None
+    fc = None
+    counts = {"checked": 0, "failed": 0}
     for h in registered_households(db):
         hid = h["household_id"]
         try:
             rate = household_rate(db, hid)
+            history = None
+            if shared is not None:
+                month_df = shared
+            else:
+                # Each home's own forecast, made from its own simulated meter readings so far.
+                history = household_meter_hourly(db.get_home_details(hid))
+                if history is None:
+                    counts["failed"] += 1
+                    continue
+                if fc is None:
+                    from forecast import Forecaster
+                    fc = Forecaster.load(use_lstm=False)
+                month_df = next_month(fc.next_days(history[["datetime", "Global_active_power"]], seasonal=False))
             info = next_month_cost(month_df, rate)
             dispatch_household_alerts(
                 household_id=hid,
@@ -171,7 +203,7 @@ def check_bill_alerts(db=None, forecast_df=None) -> Dict[str, int]:
                 predicted_kwh=info.get("total_kwh") or 0,
                 month=info.get("month") or "N/A",
                 tariff_rate=rate,
-                history_df=meter_history(db, hid),
+                history_df=history if history is not None else meter_history(db, hid),
                 language=h.get("preferred_language") or "en",
             )
             counts["checked"] += 1
@@ -204,11 +236,13 @@ def send_weekly_summaries(db=None, service=None, now: Optional[datetime] = None)
                         continue
                 except ValueError:
                     pass
-            history = meter_history(db, hid)
+            history = household_meter_hourly(db.get_home_details(hid))
+            if history is None:
+                history = meter_history(db, hid)
             if history is None:
                 counts["skipped"] += 1
                 continue
-            latest = history["datetime"].dt.date.iloc[-1]
+            latest = pd.to_datetime(history["datetime"]).dt.date.iloc[-1]
             week = weekly_cost(history, str(latest - timedelta(days=6)), household_rate(db, hid))
             service.send_weekly_summary(
                 household_id=hid,

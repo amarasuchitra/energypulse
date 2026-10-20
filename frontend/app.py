@@ -126,6 +126,7 @@ from paths import DATA_DIR, MODEL_DIR
 # ── Page config ───────────────────────────────────────────────
 st.set_page_config(
     page_title="EnergyPulse",
+    page_icon=os.path.join(_ROOT, "frontend", "static", "favicon.png"),
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -336,19 +337,20 @@ st.markdown("""
     }
     [data-testid="stHorizontalBlock"] { gap: 0.8rem !important; }
     .stTabs [data-baseweb="tab-list"] {
-        gap: 4px; background: var(--slate); border-radius: 12px;
-        padding: 4px; border: 1px solid var(--line);
-        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        gap: 2px; background: var(--slate); border-radius: 12px;
+        padding: 4px; border: 1px solid var(--line) !important;
     }
     .stTabs [data-baseweb="tab"] {
-        border-radius: 8px; padding: 10px 20px; font-weight: 600;
-        font-size: 0.85rem; color: var(--mist); border: none; background: transparent;
-        transition: all 0.2s ease;
+        border-radius: 9px !important; padding: 8px 16px !important; font-weight: 600;
+        font-size: 0.86rem; color: var(--mist) !important; border: none; background: transparent !important;
+        transition: background .18s ease, color .18s ease; box-shadow: none !important;
     }
-    .stTabs [data-baseweb="tab"]:hover { color: var(--current); }
+    .stTabs [data-baseweb="tab"]:hover { color: var(--plaster) !important; background: var(--hover) !important; }
     .stTabs [aria-selected="true"] {
-        background: var(--current) !important; color: #FFFFFF !important; border-radius: 8px;
+        background: var(--slate-2) !important; color: var(--plaster) !important;
+        box-shadow: inset 0 0 0 1px var(--line), inset 0 -2px 0 var(--current) !important;
     }
+    .stTabs [aria-selected="true"] p { color: var(--plaster) !important; }
     .stTabs [data-baseweb="tab-highlight"] { display: none; }
     .stTabs [data-baseweb="tab-border"] { display: none; }
     .stButton > button {
@@ -542,12 +544,37 @@ def build_sample_source(days=90):
                               original_range=original, shifted=True)
 
 
+@st.cache_data(show_spinner=False, max_entries=16)
+def _meter_hourly_cached(date, scenario, owned, hour):
+    from data_source import meter_hourly
+    return meter_hourly(detected_history(date, scenario, owned), _meter_now_ts(date))
+
+
+def build_meter_source():
+    """
+    The household's simulated main meter as the dataset for every page: the readings so far
+    (last 30 days up to the latest finished hour), the same ones the live tile, the alerts and
+    the next-hour forecast use.  Nothing is drawn at random on each visit; the simulation is
+    fixed by the home's setup.
+    """
+    from data_source import source_from_meter
+    scenario, _ = meter_settings()
+    hd = st.session_state.get("home_details") or {}
+    owned = tuple(owned_appliances(hd))
+    hourly = _meter_hourly_cached(today_str(), scenario, owned, now_minute() // 60)
+    return source_from_meter(hourly.copy())
+
+
 def get_data_source():
-    """The active dataset: the user's CSV when uploaded, otherwise the sample."""
+    """The active dataset: the user's CSV or meter API when given, otherwise the simulated meter."""
     upload = st.session_state.get("data_upload")
     if upload is not None and upload.get("source") is not None:
         return upload["source"]
-    return build_sample_source()
+    try:
+        return build_meter_source()
+    except Exception:
+        log.exception("Simulated meter source failed; using the bundled sample")
+        return build_sample_source()
 
 
 def active_dataframe():
@@ -563,7 +590,11 @@ def source_summary(source):
                 "body": T("src_upload_fail", reason=T("src_need_power")),
                 "rows": 0, "caps": source.capabilities}
     rows = len(df)
-    if source.is_sample:
+    if source.kind == "meter":
+        body = (f"Your home's simulated main meter: {rows:,} hourly readings from "
+                f"{format_localized_date(df['datetime'].min())} up to {format_localized_date(df['datetime'].max())}, "
+                "the same readings the live tile, the alerts and the forecasts use.")
+    elif source.is_sample:
         body = T("src_sample_body",
                  start=format_localized_date(df["datetime"].min()),
                  end=format_localized_date(df["datetime"].max()))
@@ -587,7 +618,7 @@ def source_summary(source):
                  end=format_localized_date(df["datetime"].max()))
     return {
         "kind": source.kind,
-        "title": (T("src_sample_title") if source.is_sample
+        "title": ("Simulated meter" if source.kind == "meter" else T("src_sample_title") if source.is_sample
                   else T("src_api_title") if source.kind == "api" else T("src_upload_title")),
         "body": body,
         "rows": rows,
@@ -743,7 +774,7 @@ def render_data_source_panel():
 
     source = get_data_source()
     info = source_summary(source)
-    is_upload = not source.is_sample
+    is_upload = source.kind in ("upload", "api")
     st.markdown(f"""
     <div class="sb-card" style="margin-top:0.5rem;">
         <div class="sb-card-title">{info['title']}</div>
@@ -889,8 +920,10 @@ def get_simulator():
     signature = (source.kind, source.label, len(source.df),
                  str(source.df["datetime"].max()) if not source.df.empty else "")
     if st.session_state.get("simulator_source") != signature:
-        sim.set_data(source.df)
+        sim.set_data(source.df, restart=source.kind != "meter")
         st.session_state.simulator_source = signature
+    if source.kind == "meter":
+        sim.jump_to_end()                 # the simulated meter's readings up to now are all known
     return sim
 
 
@@ -2282,7 +2315,7 @@ def render_sidebar():
     return st.session_state.sidebar_settings
 
 
-_APPLIANCE_WIDGETS = ("ap_qty_", "ap_hrs_", "ap_use_")
+_APPLIANCE_WIDGETS = ("ap_qty_", "ap_hrs_", "ap_use_", "ae_pick_")
 
 
 def _reset_appliance_widgets() -> None:
@@ -2304,7 +2337,7 @@ def _appliances_for_compare(items) -> str:
     return json.dumps(clean, sort_keys=True, default=str)
 
 
-def _render_appliances_editor(hd: dict, lang: str, closable: bool = False) -> None:
+def _render_appliances_editor(hd: dict, lang: str, closable: bool = False, picker: bool = False) -> None:
     """
     Edit the household's appliances: add, remove, quantity, hours a day, usage.
     Changes go into a draft; "Save changes" validates and writes them to the
@@ -2351,6 +2384,8 @@ def _render_appliances_editor(hd: dict, lang: str, closable: bool = False) -> No
             st.rerun()
 
     st.divider()
+    if picker:
+        _appliance_pills(draft)
     cat_cols = st.columns([2, 3, 1])
     category = cat_cols[0].selectbox("Category", catalog.CATEGORIES + ["Custom"], key="sb_cat",
                                      label_visibility="collapsed")
@@ -2371,8 +2406,8 @@ def _render_appliances_editor(hd: dict, lang: str, closable: bool = False) -> No
     changed = _appliances_for_compare(draft) != _appliances_for_compare(saved_items)
     if changed:
         st.caption("You have unsaved changes to your appliances.")
-    save_col, cancel_col = st.columns(2)
-    if save_col.button("Save changes", type="primary", key="ap_save", width="stretch", disabled=not changed):
+    cancel_col, save_col = st.columns(2)
+    if save_col.button("Save Changes", type="primary", key="ap_save", width="stretch", disabled=not changed):
         try:
             # Appliance values are checked strictly: any problem means nothing is saved and the
             # draft stays here to be fixed.  (Other home fields keep their usual correction.)
@@ -2390,7 +2425,8 @@ def _render_appliances_editor(hd: dict, lang: str, closable: bool = False) -> No
             return
         hd["appliances"] = clean["appliances"]
         st.session_state.home_details = hd
-        for key in ("appl_draft", "home_state", "_warm", "appl_edit_open"):
+        for key in ("appl_draft", "home_state", "_warm", "appl_edit_open", "_monitor_mark", "_monitor_result",
+                    "_brief_mark", "_left_on_mark"):
             st.session_state.pop(key, None)
         _reset_appliance_widgets()
         st.cache_data.clear()                 # predictions and tips are worked out again from the new list
@@ -2501,6 +2537,61 @@ def render_bill_tracker() -> None:
                 st.rerun()
 
 
+def _appliance_pills(draft: list) -> None:
+    """The setup screen's picker: tap an appliance to add it, tap again to remove it (all edits go to the draft)."""
+    import catalog
+    ver = st.session_state.get("appl_widget_ver", 0)
+    tabs = st.tabs(catalog.CATEGORIES)
+    for tab, category in zip(tabs, catalog.CATEGORIES):
+        with tab:
+            types = catalog.types_in(category)
+            have = [t.name for t in types if any(isinstance(i, dict) and i.get("type_key") == t.key for i in draft)]
+            picked = set(st.pills(category, [t.name for t in types], selection_mode="multi", default=have,
+                                  key=f"ae_pick_{ver}_{category}", label_visibility="collapsed") or [])
+            changed = False
+            for t in types:
+                exists = any(isinstance(i, dict) and i.get("type_key") == t.key for i in draft)
+                if t.name in picked and not exists:
+                    draft.append(catalog.item_for(t.key))
+                    changed = True
+                elif t.name not in picked and exists:
+                    if all(isinstance(i, dict) and i.get("type_key") == t.key for i in draft):
+                        st.toast("Keep at least one appliance. Add another before removing this one.", icon="ℹ️")
+                        changed = True                        # the picker is redrawn with it still selected
+                        continue
+                    draft[:] = [i for i in draft if not (isinstance(i, dict) and i.get("type_key") == t.key)]
+                    changed = True
+            if changed:
+                _reset_appliance_widgets()
+                st.rerun()
+
+
+def render_appliance_edit_page() -> None:
+    """
+    Edit appliances: the setup screen's appliance page, opened from the Dashboard with the saved
+    list already selected.  Changes stay in a draft until "Save Changes" writes them to the
+    household's own record; "Cancel" returns to the Dashboard without changing anything.
+    """
+    hd = st.session_state.get("home_details") or {}
+    labels = [T("step_home_info"), T("step_appliances"), T("step_rate")]
+    side, main_col = st.columns([1, 1.75], gap="large")
+    with side:
+        st.markdown(
+            wordmark()
+            + "<div class='ep-head' style='margin-top:2.6rem'><h1>Edit your appliances</h1>"
+              "<p>Your saved appliances are already selected. Add, remove or change them, then save. "
+              "Forecasts, tips and alerts are worked out again from the new list.</p></div>"
+            + step_list(labels, 2), unsafe_allow_html=True)
+    with main_col:
+        with st.container(key="onboard_panel"):
+            section(T("ob_your_appliances"))
+            st.markdown('<div style="color:var(--mist);font-size:0.84rem;margin-bottom:0.6rem;">'
+                        'Tap an appliance to add it, tap it again to remove it. Set how many you have and how '
+                        'long each runs below. Nothing is saved until you press Save Changes.</div>',
+                        unsafe_allow_html=True)
+            _render_appliances_editor(hd, st.session_state.get("lang", "en"), closable=True, picker=True)
+
+
 def render_dashboard_appliances(hd: dict) -> None:
     """The saved appliance list on the Dashboard, with an Edit appliances button beside its heading."""
     items = [a for a in (hd.get("appliances") or []) if isinstance(a, dict)]
@@ -2515,9 +2606,7 @@ def render_dashboard_appliances(hd: dict) -> None:
             st.session_state.pop("appl_draft", None)
             _reset_appliance_widgets()
             st.rerun()
-        if editing:
-            _render_appliances_editor(hd, st.session_state.get("lang", "en"), closable=True)
-        elif items:
+        if items:
             st.caption(" · ".join(
                 f"{a.get('name', 'Appliance')}" + (f" ×{int(a.get('quantity', 1))}" if int(a.get('quantity', 1) or 1) > 1 else "")
                 for a in items))
@@ -3166,6 +3255,8 @@ def _main_dashboard_inner():
     cal_month = ss.get("cal_month", local_now().month)
     cal_year = ss.get("cal_year", local_now().year)
     sf = compute_scaling_factor(home_details)
+    if (st.session_state.get("data_upload") or {}).get("source") is None:
+        sf = 1.0                     # the simulated meter is already this home's own size and appliances
 
     auth_email = st.session_state.auth["email"]
     primary_user = get_db().get_user(auth_email)
@@ -3208,7 +3299,7 @@ def _main_dashboard_inner():
     hybrid_mae = fc_hourly.get("mae_kw", {}).get("hybrid") or 0.3
 
     # Load previous simulation history from DB and combine with current replay
-    if "sim_history_loaded" not in st.session_state:
+    if "sim_history_loaded" not in st.session_state and source.kind != "meter":
         db = get_db()
         hist_df = db.get_simulation_history(household_id, limit=5000)
         if not hist_df.empty:
@@ -3662,6 +3753,10 @@ def main():
         return
     if not render_onboarding():
         motion_runtime(f"setup-{st.session_state.get('onboard_step', 1)}")
+        return
+    if st.session_state.get("appl_edit_open"):
+        render_appliance_edit_page()
+        motion_runtime("edit-appliances")
         return
     render_sidebar()
     main_dashboard()

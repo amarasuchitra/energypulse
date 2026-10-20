@@ -57,19 +57,26 @@ PULSE_SVG = ("<svg class='ep-pulse' viewBox='0 0 120 28' aria-hidden='true'>"
              "<path d='M1 14h26l5-9 7 20 7-24 6 18 4-5h63' pathLength='1'/></svg>")
 
 
+# The mark: an amber tile with a meter pulse drawn inside it (everything within the tile), and the
+# name set beside it.  One drawing for every size, so the logo reads the same everywhere.
+LOGO_SVG = ("<svg class='ep-mark' viewBox='0 0 32 32' role='img' aria-label='EnergyPulse'>"
+            "<defs><linearGradient id='ep-mark-g' x1='0' y1='0' x2='1' y2='1'>"
+            "<stop offset='0' stop-color='#FFC56B'/><stop offset='1' stop-color='#E9862A'/></linearGradient></defs>"
+            "<rect width='32' height='32' rx='9' fill='url(#ep-mark-g)'/>"
+            "<path class='ep-mark-line' d='M5.5 17.5h5.2l2.6-6.2 4.1 11.2 3.1-8.4 1.6 3.4h4.4'/></svg>")
+FAVICON = ("data:image/svg+xml," + quote(LOGO_SVG.replace("class='ep-mark' ", "xmlns='http://www.w3.org/2000/svg' ")
+                                              .replace("class='ep-mark-line' ",
+                                                       "fill='none' stroke='#161B29' stroke-width='2.5' "
+                                                       "stroke-linecap='round' stroke-linejoin='round' ")))
+
+
 def wordmark(size: str = "") -> str:
-    return (f"<div class='ep-wordmark {size}'><svg viewBox='0 0 32 32' aria-hidden='true'>"
-            "<rect x='0' y='0' width='32' height='32' rx='8' fill='currentColor'/>"
-            "<path d='M8 12h10l3.5-8 4 14 4-16 3 11 2-4h10' fill='none' stroke='var(--ink)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' pathLength='1'/>"
-            "</svg><span>EnergyPulse</span></div>")
+    return f"<div class='ep-wordmark {size}'>{LOGO_SVG}<span>Energy<b>Pulse</b></span></div>"
 
 
 # Alternative minimal wordmark for sidebar
 def wordmark_mini() -> str:
-    return ("<div class='ep-wordmark mini'><svg viewBox='0 0 32 32' aria-hidden='true'>"
-            "<rect x='0' y='0' width='32' height='32' rx='8' fill='var(--current)'/>"
-            "<path d='M8 12h10l3.5-8 4 14 4-16 3 11 2-4h10' fill='none' stroke='var(--ink)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' pathLength='1'/>"
-            "</svg><span>EnergyPulse</span></div>")
+    return f"<div class='ep-wordmark mini'>{LOGO_SVG}<span>Energy<b>Pulse</b></span></div>"
 
 
 # ----------------------------------------------------------------- stylesheet
@@ -187,12 +194,16 @@ header[data-testid="stHeader"] button { pointer-events: auto; visibility: visibl
 }
 
 /* ---------- wordmark ---------- */
-.ep-wordmark { display: flex; align-items: center; gap: 10px; color: var(--plaster); }
-.ep-wordmark span { font-family: var(--display); font-weight: 650; font-size: 1.22rem; line-height: 1; letter-spacing: -0.035em; }
-.ep-wordmark svg { width: 34px; height: 20px; flex: none; }
-.ep-wordmark path, .ep-pulse path { fill: none; stroke: var(--current); stroke-width: 1.8;
+.ep-wordmark { display: flex; align-items: center; gap: 11px; color: var(--plaster); }
+.ep-wordmark span { font-family: var(--display); font-weight: 600; font-size: 1.2rem; line-height: 1; letter-spacing: -0.03em; }
+.ep-wordmark span b { font-weight: 700; color: var(--current); }
+.ep-wordmark svg.ep-mark { width: 34px; height: 34px; flex: none; border-radius: 9px;
+  box-shadow: 0 1px 0 rgba(255,255,255,.18) inset, 0 6px 18px -6px rgba(233,134,42,.55); }
+.ep-wordmark .ep-mark-line { fill: none; stroke: #161B29; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.ep-pulse path { fill: none; stroke: var(--current); stroke-width: 1.8;
   stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 1; animation: ep-draw 1.4s var(--ease) both; }
 .ep-wordmark.big span { font-size: 1.5rem; }
+.ep-wordmark.big svg.ep-mark { width: 40px; height: 40px; }
 
 /* ---------- page header ---------- */
 .ep-head { margin: 0 0 1.4rem; }
@@ -222,10 +233,10 @@ section[data-testid="stSidebar"] > div { padding-top: 0.5rem; padding-bottom: 1.
 .ep-sidebar-brand { padding: 0 16px 20px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
 .ep-sidebar-brand .ep-wordmark { gap: 12px; }
 .ep-sidebar-brand .ep-wordmark span { font-size: 1.15rem; font-weight: 650; letter-spacing: -0.03em; }
-.ep-sidebar-brand .ep-wordmark svg { width: 32px; height: 32px; flex: none; }
+.ep-sidebar-brand .ep-wordmark svg.ep-mark { width: 32px; height: 32px; flex: none; }
 .ep-sidebar-brand.mini { padding: 12px 16px 16px; border-bottom: 1px solid var(--line); }
 .ep-sidebar-brand.mini .ep-wordmark span { font-size: 1rem; }
-.ep-sidebar-brand.mini .ep-wordmark svg { width: 28px; height: 28px; }
+.ep-sidebar-brand.mini .ep-wordmark svg.ep-mark { width: 28px; height: 28px; }
 
 /* Navigation list */
 .ep-nav-list { display: flex; flex-direction: column; gap: 4px; padding: 0 10px; }
@@ -314,7 +325,21 @@ hr { border-color: var(--line) !important; }
   box-shadow: inset 0 -2px 0 var(--current); }
 [data-baseweb="tab-panel"] { padding-top: 1rem !important; }
 .stButton button:disabled, [data-testid="stBaseButton-primary"]:disabled {
-  opacity: .38 !important; cursor: not-allowed !important; filter: saturate(.4); }
+  opacity: 1 !important; cursor: not-allowed !important; filter: none; background: var(--slate-2) !important;
+  border-color: var(--line) !important; }
+.stButton button:disabled p, [data-testid="stBaseButton-primary"]:disabled p { color: var(--faint) !important; }
+/* ---------- polish: pills, focus, cards ---------- */
+button[data-testid="stBaseButton-pills"], button[data-testid="stBaseButton-pillsActive"] {
+  border-radius: 999px !important; padding: 6px 14px !important; font-weight: 550 !important;
+  border: 1px solid var(--line) !important; background: var(--field) !important; color: var(--soft) !important;
+  transition: border-color .15s ease, background .15s ease; }
+button[data-testid="stBaseButton-pills"]:hover { border-color: #56628c !important; color: var(--plaster) !important; }
+button[data-testid="stBaseButton-pillsActive"] { background: rgba(245,168,60,.14) !important;
+  border-color: var(--current) !important; color: var(--plaster) !important; }
+button[data-testid="stBaseButton-pillsActive"] p { color: var(--plaster) !important; }
+.stButton > button:focus-visible, button[data-testid^="stBaseButton-pills"]:focus-visible,
+.stTabs [data-baseweb="tab"]:focus-visible { outline: 2px solid var(--current) !important; outline-offset: 2px; }
+[data-testid="stVerticalBlockBorderWrapper"] { border-radius: 16px !important; }
 [class*="st-key-am_drop_zone"] [data-testid="stFileUploaderDropzone"],
 [class*="st-key-home_drop_zone"] [data-testid="stFileUploaderDropzone"] {
   min-height: 132px; border: 2px dashed var(--line) !important; border-radius: 16px !important;

@@ -474,8 +474,8 @@ class DataSource:
 
     def __init__(self, df, kind, filename="", label="", original_range=None,
                  shifted=False, report=None):
-        if kind not in ("sample", "upload", "api"):
-            raise ValueError("kind must be 'sample', 'upload' or 'api'")
+        if kind not in ("sample", "upload", "api", "meter"):
+            raise ValueError("kind must be 'sample', 'upload', 'api' or 'meter'")
         self.df = add_time_features(df) if df is not None else pd.DataFrame()
         self.kind = kind
         self.filename = filename
@@ -512,6 +512,38 @@ def source_from_sample(df: pd.DataFrame, filename: str, original_range=None,
                        shifted=True):
     return DataSource(df, "sample", filename=filename,
                       original_range=original_range, shifted=shifted)
+
+
+def source_from_meter(df: pd.DataFrame, label: str = "Simulated meter"):
+    """The household's own simulated main meter, hour by hour up to now (real timestamps)."""
+    return DataSource(df, "meter", filename=label, label=label, shifted=False)
+
+
+def meter_hourly(minute_df: pd.DataFrame, upto) -> pd.DataFrame:
+    """
+    1-minute simulated meter readings -> the hourly columns every page uses, finished hours only.
+      Global_active_power  average kW in the hour (= kWh in the hour)
+      Sub_metering_1/2/3   Wh in the hour for kitchen / laundry and fridge / water heater and AC
+      Global_intensity     A at 230 V;  Voltage 230
+    """
+    df = minute_df[pd.to_datetime(minute_df["datetime"]) < pd.Timestamp(upto).floor("h")].copy()
+    if df.empty:
+        return pd.DataFrame(columns=["datetime", TARGET])
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    groups = {"Sub_metering_1": ("microwave", "dishwasher", "induction", "kettle", "mixer", "otg"),
+              "Sub_metering_2": ("washing_machine", "fridge", "iron"),
+              "Sub_metering_3": ("geyser", "ac", "water_pump", "heater")}
+    out = pd.DataFrame({"datetime": df["datetime"].dt.floor("h"), TARGET: df["mains_kw"].astype(float)})
+    for col, keys in groups.items():
+        cols = [f"{k}_kw" for k in keys if f"{k}_kw" in df.columns]
+        out[col] = df[cols].astype(float).sum(axis=1) * 1000.0 if cols else 0.0
+    hourly = out.groupby("datetime").agg({TARGET: "mean", "Sub_metering_1": "mean", "Sub_metering_2": "mean",
+                                          "Sub_metering_3": "mean"})
+    counts = out.groupby("datetime").size()
+    hourly = hourly[counts >= 45].reset_index()
+    hourly["Voltage"] = 230.0
+    hourly["Global_intensity"] = hourly[TARGET] * 1000.0 / 230.0
+    return hourly
 
 
 def source_from_upload(df: pd.DataFrame, filename: str, report=None):

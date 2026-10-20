@@ -117,6 +117,13 @@ class ReplaySimulator:
         if restart or was_running:
             self.start()
 
+    def jump_to_end(self) -> None:
+        """Show every row as already played (a live meter: its readings so far are all known)."""
+        self.stop()
+        with self._lock:
+            self._index = len(self._df)
+            self._current_row = self._df.iloc[-1].to_dict() if len(self._df) else None
+
     @property
     def latest_row(self) -> dict | None:
         """Return the most recently replayed row as a dict."""

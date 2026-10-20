@@ -326,3 +326,90 @@ def test_layout_has_rules_for_narrow_screens():
     css = open(os.path.join("frontend", "shell_ui.py"), encoding="utf-8").read() + \
         open(os.path.join("frontend", "app.py"), encoding="utf-8").read()
     assert "@media" in css and "max-width" in css
+
+
+# ------------------------------------------------------------------ Edit appliances page
+def _pills(at):
+    try:
+        return list(at.get("button_group"))
+    except Exception:                                          # noqa: BLE001
+        return []
+
+
+@pytest.mark.brief("EDIT-001", "EDIT-002", "EDIT-003", "UI-001")
+def test_edit_appliances_opens_the_setup_picker_with_saved_items_selected():
+    import catalog
+    email, hid = _saved_user([catalog.item_for("ac"), catalog.item_for("fridge")])
+    at = _new()
+    _sign_in(at, email)
+    assert "Something went wrong" not in _texts(at)                          # dashboard drew cleanly
+    at.button(key="dash_edit_appliances").click().run()
+    _ok(at)
+    keys = {b.key for b in at.button}
+    assert "ap_save" in keys and "ap_cancel" in keys
+    assert "side_logout" not in keys                                         # the full page, like setup
+    assert "Edit your appliances" in _texts(at)
+    labels = [b.label for b in at.button]
+    assert "Save Changes" in labels and "Cancel" in labels
+    groups = _pills(at)
+    if groups:                                                               # the picker shows what is saved
+        chosen = [v for g in groups for v in (g.value or [])]
+        assert "Air conditioner" in chosen and any("ridge" in str(v) for v in chosen)
+
+
+@pytest.mark.brief("EDIT-004", "EDIT-007")
+def test_picker_adds_and_save_changes_persists_and_updates_the_dashboard():
+    import catalog
+    email, hid = _saved_user([catalog.item_for("ac")])
+    at = _new()
+    _sign_in(at, email)
+    at.button(key="dash_edit_appliances").click().run()
+    _ok(at)
+    groups = _pills(at)
+    added = False
+    for g in groups:
+        opts = [str(o) for o in getattr(g, "options", [])]
+        if "Ceiling fan" in opts:
+            g.set_value(list(g.value or []) + ["Ceiling fan"]).run()
+            added = True
+            break
+    if not added:                                                            # no pills in this Streamlit test API
+        at.selectbox(key="sb_cat").set_value("Cooling").run()
+        at.selectbox(key="sb_type").set_value("Ceiling fan").run()
+        at.button(key="sb_add").click().run()
+    _ok(at)
+    assert not at.button(key="ap_save").disabled
+    at.button(key="ap_save").click().run()
+    _ok(at)
+    saved = DatabaseManager().get_home_details(hid)["appliances"]
+    assert sorted(a["type_key"] for a in saved) == ["ac", "fan"]
+    assert at.button(key="dash_edit_appliances") and "Your appliances (2)" in _texts(at)
+    assert "Something went wrong" not in _texts(at)
+    other = _new()                                                           # next login loads the same list
+    _sign_in(other, email)
+    assert "Your appliances (2)" in _texts(other)
+
+
+@pytest.mark.brief("EDIT-009", "EDIT-010")
+def test_database_failure_on_save_keeps_the_draft_and_says_so(monkeypatch):
+    import catalog
+    email, hid = _saved_user([catalog.item_for("ac"), catalog.item_for("fridge")])
+    at = _new()
+    _sign_in(at, email)
+    at.button(key="dash_edit_appliances").click().run()
+    qty = [n for n in at.number_input if str(n.key).startswith("ap_qty_")]
+    qty[0].set_value(3).run()
+
+    def broken(self, *a, **kw):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(DatabaseManager, "save_home_details", broken)
+    at.button(key="ap_save").click().run()
+    _ok(at)
+    assert "could not be saved just now" in _texts(at)
+    assert at.button(key="ap_save") and not at.button(key="ap_save").disabled  # still editing, draft kept
+    assert [n for n in at.number_input if str(n.key).startswith("ap_qty_")][0].value == 3
+    monkeypatch.undo()
+    assert DatabaseManager().get_home_details(hid)["appliances"][0].get("quantity", 1) == 1
+    at.button(key="ap_save").click().run()                                   # works once the database is back
+    _ok(at)
+    assert DatabaseManager().get_home_details(hid)["appliances"][0]["quantity"] == 3
