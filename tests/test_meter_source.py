@@ -39,3 +39,17 @@ def test_meter_readings_are_shown_as_already_known_not_replayed():
     played, total = sim.progress
     assert played == total == len(h) and not sim.is_running
     assert pd.Timestamp(sim.latest_row["datetime"]) == pd.Timestamp("2026-10-20 13:00")
+
+
+def test_chatbot_prediction_uses_the_homes_own_readings():
+    import pytest
+    pytest.importorskip("xgboost")
+    from chatbot import GetCurrentPredictionTool
+    t = pd.date_range("2026-09-01", periods=45 * 24, freq="h")
+    data = pd.DataFrame({"datetime": t, "Global_active_power": 0.5})
+    low = GetCurrentPredictionTool().execute("h", tariff_rate=8.0, household_data=data)
+    high = GetCurrentPredictionTool().execute("h", tariff_rate=8.0,
+                                             household_data=data.assign(Global_active_power=2.0))
+    assert low["status"] == "success" and high["status"] == "success"
+    assert high["predicted_monthly_kwh"] > low["predicted_monthly_kwh"]   # follows this home's use
+    assert "meter readings" in low["basis"]

@@ -787,9 +787,10 @@ def render_data_source_panel():
             f'{format_localized_date(info["original"][0])} – '
             f'{format_localized_date(info["original"][1])}</div>',
             unsafe_allow_html=True)
-    st.markdown(
-        f'<div style="color:rgba(255,255,255,0.35);font-size:0.66rem;">'
-        f'{T("src_replaying")}</div>', unsafe_allow_html=True)
+    if source.kind != "meter":
+        st.markdown(
+            f'<div style="color:rgba(255,255,255,0.35);font-size:0.66rem;">'
+            f'{T("src_replaying")}</div>', unsafe_allow_html=True)
 
     report = info.get("report") or {}
     if not source.is_sample and report.get("applied_unit"):
@@ -969,7 +970,8 @@ def sign_out():
             log.warning("Guest cleanup failed: %s", exc)
     for k in ["auth", "home_details", "simulator", "onboard_data", "onboard_step", "sidebar_settings",
               "page", "bills", "bill_seen", "home_state", "nilm_dismissed", "data_upload", "ensemble_setting",
-              "data_upload_sig", "data_upload_error", "data_api", "sanctioned_kw"]:
+              "data_upload_sig", "data_upload_error", "data_api", "sanctioned_kw", "meter_scenario",
+              "_meter_scenario_loaded", "_live_seen", "appl_edit_open", "appl_draft"]:
         st.session_state.pop(k, None)
 
 
@@ -2785,7 +2787,18 @@ def render_settings_page():
     with right:
         with st.container(border=True):
             section("Meter demo")
+            before = st.session_state.get("meter_scenario")
             render_meter_settings()
+            if st.session_state.get("meter_scenario") != before:
+                try:
+                    from meter_source import SCENARIO_KEY
+                    get_db().set_store(current_household_id(), SCENARIO_KEY,
+                                       {"scenario": st.session_state.get("meter_scenario")})
+                    for key in ("_monitor_mark", "_brief_mark", "_left_on_mark"):
+                        st.session_state.pop(key, None)
+                except Exception:
+                    log.exception("Could not save the simulated home")
+            st.caption("Saved for your home: the dashboard, alerts and emails all use this simulated home.")
         with st.container(border=True):
             section(T("ens_title"))
             render_ensemble_settings()
@@ -3354,7 +3367,7 @@ def _main_dashboard_inner():
         </div>
         """)
         # Say plainly what the numbers above are based on.
-        source_text = f"{src_info['title']} — {src_info['body']} {T('src_replaying')}"
+        source_text = f"{src_info['title']} — {src_info['body']}" + ("" if source.kind == "meter" else f" {T('src_replaying')}")
         missing_notes = []
         if not can_predict:
             missing_notes.append(T(
@@ -3754,6 +3767,13 @@ def main():
     if not render_onboarding():
         motion_runtime(f"setup-{st.session_state.get('onboard_step', 1)}")
         return
+    if "_meter_scenario_loaded" not in st.session_state:          # the household's chosen simulated home
+        st.session_state["_meter_scenario_loaded"] = True
+        try:
+            from meter_source import saved_scenario
+            st.session_state["meter_scenario"] = saved_scenario(get_db(), current_household_id())
+        except Exception:
+            log.exception("Could not load the saved simulated home")
     if st.session_state.get("appl_edit_open"):
         render_appliance_edit_page()
         motion_runtime("edit-appliances")

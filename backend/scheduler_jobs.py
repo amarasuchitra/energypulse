@@ -80,7 +80,7 @@ def meter_history(db, household_id: str):
     return df
 
 
-def household_meter_hourly(home: dict):
+def household_meter_hourly(home: dict, scenario_name: Optional[str] = None):
     """
     The household's simulated main meter, hourly, up to the last finished hour on its own clock:
     the same readings the dashboard, the live alerts and the forecasts use.  None when not set up.
@@ -95,9 +95,14 @@ def household_meter_hourly(home: dict):
     tz = home.get("timezone") if valid(home.get("timezone")) else DEFAULT_TZ
     now = pd.Timestamp.now(tz=ZoneInfo(tz)).tz_localize(None)
     owned = owned_appliances(home)
-    minute_df = detected_history(str(now.date()), with_habits(list(SCENARIOS)[0], home), owned)
+    minute_df = detected_history(str(now.date()), with_habits(scenario_name or list(SCENARIOS)[0], home), owned)
     hourly = meter_hourly(minute_df, now)
     return hourly if not hourly.empty else None
+
+
+def saved_scenario(db, hid):
+    from meter_source import saved_scenario as _saved
+    return _saved(db, hid)
 
 
 # ----------------------------------------------------------------- jobs
@@ -122,7 +127,7 @@ def run_daily_briefs(db=None, service=None, date: Optional[str] = None) -> Dict[
                 counts["skipped"] += 1
                 continue
             owned = owned_appliances(home)
-            scenario = with_habits(list(SCENARIOS)[0], home)
+            scenario = with_habits(saved_scenario(db, hid), home)
             from meter_source import meter_context
             brief = make_brief(date, scenario, owned, household_rate(db, hid), True)
             if not brief:
@@ -187,7 +192,7 @@ def check_bill_alerts(db=None, forecast_df=None) -> Dict[str, int]:
                 month_df = shared
             else:
                 # Each home's own forecast, made from its own simulated meter readings so far.
-                history = household_meter_hourly(db.get_home_details(hid))
+                history = household_meter_hourly(db.get_home_details(hid), saved_scenario(db, hid))
                 if history is None:
                     counts["failed"] += 1
                     continue
@@ -236,7 +241,7 @@ def send_weekly_summaries(db=None, service=None, now: Optional[datetime] = None)
                         continue
                 except ValueError:
                     pass
-            history = household_meter_hourly(db.get_home_details(hid))
+            history = household_meter_hourly(db.get_home_details(hid), saved_scenario(db, hid))
             if history is None:
                 history = meter_history(db, hid)
             if history is None:
@@ -291,7 +296,7 @@ def check_meter_usage(db=None, service=None, fc=None) -> Dict[str, int]:
             tz = home.get("timezone") if valid(home.get("timezone")) else DEFAULT_TZ
             now = pd.Timestamp.now(tz=ZoneInfo(tz)).tz_localize(None)
             owned = owned_appliances(home)
-            scenario = with_habits(list(SCENARIOS)[0], home)
+            scenario = with_habits(saved_scenario(db, hid), home)
             minute_df = detected_history(str(now.date()), scenario, owned)
             res = monitoring.run_check(db, fc, hid, minute_df, now, owned,
                                        people=household_people(db, hid, h["name"], h["email"]),

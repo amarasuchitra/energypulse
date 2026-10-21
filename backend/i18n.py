@@ -134,7 +134,7 @@ TRANSLATIONS = {
         "src_sample_body": "Household readings from {start} to {end}, replayed with today's dates. This is a demo, not a live meter.",
         "src_upload_title": "Your CSV",
         "src_upload_body": "{name}: {rows} hourly rows, {start} to {end}.",
-        "src_use_sample": "Use sample data",
+        "src_use_sample": "Use my simulated meter",
         "src_api_title": "Meter API",
         "src_api_connect": "Connect a meter API",
         "src_api_url": "Readings URL (JSON or CSV)",

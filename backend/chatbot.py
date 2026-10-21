@@ -299,10 +299,25 @@ class GetCurrentPredictionTool(ChatbotTool):
         )
 
     def execute(self, household_id: str, tariff_rate: float = 8.0,
-                scaling_factor: float = 1.0) -> Dict[str, Any]:
+                scaling_factor: float = 1.0, household_data: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
         try:
-            from notifications import load_prediction_stats
-            stats = load_prediction_stats(tariff_rate=float(tariff_rate))
+            stats = None
+            if household_data is not None and not household_data.empty and "Global_active_power" in household_data:
+                # Next month from this home's own readings (the simulated meter), as the dashboard shows it.
+                from cost import next_month_cost
+                from forecast import Forecaster, month_slice
+                fdf = Forecaster.load(use_lstm=False).next_days(
+                    household_data[["datetime", "Global_active_power"]], seasonal=False)
+                if fdf is not None and not fdf.empty:
+                    start = pd.to_datetime(fdf["datetime"]).min()
+                    nxt = start.normalize().replace(day=1) + pd.DateOffset(months=1)
+                    part = month_slice(fdf, nxt.year, nxt.month)
+                    info = next_month_cost(part if not part.empty else fdf, float(tariff_rate))
+                    stats = {"predicted_cost": info.get("total_cost") or 0, "predicted_kwh": info.get("total_kwh") or 0,
+                             "month": info.get("month") or "N/A"}
+            if stats is None:
+                from notifications import load_prediction_stats
+                stats = load_prediction_stats(tariff_rate=float(tariff_rate))
             predicted_cost = round(float(stats["predicted_cost"]) * scaling_factor, 2)
             predicted_kwh = round(float(stats["predicted_kwh"]) * scaling_factor, 2)
             return {
@@ -311,7 +326,7 @@ class GetCurrentPredictionTool(ChatbotTool):
                 "predicted_monthly_kwh": predicted_kwh,
                 "tariff_rate": float(tariff_rate),
                 "month": stats["month"],
-                "basis": "computed from the stored model forecast",
+                "basis": "forecast from your home's meter readings",
             }
         except Exception as e:
             return {"status": "error", "message": str(e)}
@@ -480,7 +495,7 @@ class EnergyPulseChatbot:
             try:
                 if tool_name == "get_current_prediction":
                     result = tool.execute(household_id, tariff_rate=tariff_rate,
-                                          scaling_factor=scaling_factor)
+                                          scaling_factor=scaling_factor, household_data=household_data)
                 elif tool_name == "get_usage_history":
                     result = tool.execute(household_id, days_back=7, household_data=household_data)
                 elif tool_name == "get_appliance_breakdown":

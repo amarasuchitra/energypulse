@@ -60,7 +60,7 @@ def test_daily_brief_is_sent_once_per_day(tmp_path):
 
 def test_weekly_summary_uses_the_households_simulated_meter(tmp_path, monkeypatch):
     db = _db(tmp_path)
-    monkeypatch.setattr(jobs, "household_meter_hourly", lambda home: _history() if home else None)
+    monkeypatch.setattr(jobs, "household_meter_hourly", lambda home, scenario=None: _history() if home else None)
     svc = FakeService()
     result = jobs.send_weekly_summaries(db=db, service=svc)
     assert result == {"sent": 1, "skipped": 0, "failed": 0}
@@ -69,7 +69,7 @@ def test_weekly_summary_uses_the_households_simulated_meter(tmp_path, monkeypatc
 
 def test_weekly_summary_falls_back_to_saved_meter_readings(tmp_path, monkeypatch):
     db = _db(tmp_path)
-    monkeypatch.setattr(jobs, "household_meter_hourly", lambda home: None)
+    monkeypatch.setattr(jobs, "household_meter_hourly", lambda home, scenario=None: None)
     db.save_simulation_history("hh1", _history())
     svc = FakeService()
     result = jobs.send_weekly_summaries(db=db, service=svc)
@@ -132,3 +132,13 @@ def test_only_old_guests_are_purged(tmp_path):
         conn.execute("UPDATE users SET created_at = datetime('now', '-2 days') WHERE is_guest = 1")
     assert jobs.purge_guests(db, 24) == 1
     assert db.get_user("asha@example.com") is not None
+
+
+def test_simulated_home_choice_is_saved_per_household(tmp_path):
+    from meter_source import SCENARIO_KEY, SCENARIOS, saved_scenario
+    db = _db(tmp_path)
+    assert saved_scenario(db, "hh1") == list(SCENARIOS)[0]              # the reference home by default
+    db.set_store("hh1", SCENARIO_KEY, {"scenario": "Geyser left on by mistake"})
+    assert saved_scenario(db, "hh1") == "Geyser left on by mistake"
+    db.set_store("hh1", SCENARIO_KEY, {"scenario": "not a scenario"})
+    assert saved_scenario(db, "hh1") == list(SCENARIOS)[0]

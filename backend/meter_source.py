@@ -35,6 +35,18 @@ SCENARIOS = {
     "All of the above": ["evening_laundry", "geyser_left_on", "fridge_seal", "pump_dry_run"],
 }
 
+SCENARIO_KEY = "meter_demo"
+
+
+def saved_scenario(db, household_id: str) -> str:
+    """The simulated home chosen on Settings for this household (the reference home when none)."""
+    try:
+        name = (db.get_store(household_id, SCENARIO_KEY) or {}).get("scenario")
+    except Exception:
+        name = None
+    return name if name in SCENARIOS else list(SCENARIOS)[0]
+
+
 def owned_appliances(home_details: Optional[dict]) -> Tuple[str, ...]:
     """
     Detector keys for the appliances this household listed during setup.
