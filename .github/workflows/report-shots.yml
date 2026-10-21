@@ -1,0 +1,44 @@
+name: report screenshots
+on:
+  push:
+    branches: [shots]
+permissions:
+  contents: write
+jobs:
+  shots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ENERGYPULSE_DB: /tmp/shots.db
+      ENERGYPULSE_NO_SCHEDULER: "1"
+      ENERGYPULSE_SECRET: ci-screenshots-only
+      SHOT_EMAIL: asha.demo@example.com
+      SHOT_PW: Demo-Report-2026!x
+      PYTHONPATH: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: |
+          sudo apt-get update -qq && xargs -a packages.txt sudo apt-get install -y -qq || true
+          pip install -q -r requirements.txt playwright
+          python -m playwright install --with-deps chromium
+      - run: python tools/report_shots/seed.py
+      - name: start the app on localhost
+        run: |
+          nohup streamlit run frontend/app.py --server.headless true --server.port 8501 > /tmp/app.log 2>&1 &
+          for i in $(seq 1 120); do curl -sf http://localhost:8501/_stcore/health && break; sleep 2; done
+      - run: python tools/report_shots/capture.py
+      - if: always()
+        run: tail -n 80 /tmp/app.log
+      - name: publish screenshots to a branch
+        if: always()
+        run: |
+          mkdir -p /tmp/out && cp shots/*.png /tmp/out/ || true
+          git config user.name amarasuchitra
+          git config user.email amarasuchitra.23aiml@saividya.ac.in
+          git checkout --orphan report-shots-out
+          git rm -rfq .
+          cp /tmp/out/*.png . && git add *.png && git commit -qm "report screenshots" && git push -f origin report-shots-out
