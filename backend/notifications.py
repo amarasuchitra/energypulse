@@ -101,6 +101,13 @@ def _read_setting(*names: str) -> Optional[str]:
     return None
 
 
+def mask_email(addr: str) -> str:
+    """a***@gmail.com: enough to tell addresses apart in a log, without writing them out."""
+    addr = str(addr or "")
+    name, at, domain = addr.partition("@")
+    return (name[:1] + "***" + at + domain) if at else "***"
+
+
 def _redact(text: str, secrets: Tuple[Optional[str], ...] = ()) -> str:
     """
     Replace any configured credential found in `text` with ****.
@@ -649,6 +656,7 @@ class NotificationService:
             )
             response = self.sg_client.send(message)
             if 200 <= response.status_code < 300:
+                log.info("Email sent to %s via SendGrid: %s", mask_email(to_email), subject[:80])
                 return (True, None)
             body = ""
             try:
@@ -683,6 +691,7 @@ class NotificationService:
                     if self._real(self.SMTP_USERNAME) or self.SMTP_PASSWORD:
                         server.login(self.SMTP_USERNAME, self.SMTP_PASSWORD)
                     server.sendmail(self.SMTP_FROM, [to_email], msg.as_string())
+                log.info("Email sent to %s via %s: %s", mask_email(to_email), self.SMTP_HOST, subject[:80])
                 return (True, None)
             except Exception as e:
                 error = self._clean_error(e)

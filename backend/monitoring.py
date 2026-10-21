@@ -267,6 +267,10 @@ def deliver(db, household_id: str, people: List[dict], subject: str, body: str, 
                                 status=status, error_message=error)
         except Exception:
             log.exception("Could not store the alert for %s", household_id)
+        if status == "in-app":
+            log.info("Alert '%s' for household %s shown in the app only (%s)", subject[:60], household_id[:8],
+                     "earlier event, not emailed" if not email_ok else
+                     "guest or local address" if email.endswith(".local") else "email is not set up")
         report.append({"email": email, "status": status, "error": error})
     return report
 
