@@ -51,5 +51,7 @@ def test_chatbot_prediction_uses_the_homes_own_readings():
     high = GetCurrentPredictionTool().execute("h", tariff_rate=8.0,
                                              household_data=data.assign(Global_active_power=2.0))
     assert low["status"] == "success" and high["status"] == "success"
-    assert high["predicted_monthly_kwh"] > low["predicted_monthly_kwh"]   # follows this home's use
+    assert high["predicted_monthly_kwh"] > 2.5 * low["predicted_monthly_kwh"]   # follows this home's level
+    days = 31 if "31" else 30
+    assert 0.5 * 12 * 28 < low["predicted_monthly_kwh"] < 1.6 * 12 * days     # about 0.5 kW x 24 h a day
     assert "meter readings" in low["basis"]

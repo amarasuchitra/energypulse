@@ -228,8 +228,16 @@ class Forecaster:
             return pd.DataFrame()
         d = d.iloc[-DAILY_HISTORY:]
         season_dates = (d.index - season_shift) if (seasonal and season_shift is not None) else None
-        F = daily_features(d, len(d) - 1, seasonal, season_dates=season_dates)
-        daily_kwh = np.maximum(model.predict(F.reindex(columns=feats)), 0.0)
+        # The generic model learnt from homes using ~26 kWh a day.  A home using much less or much more
+        # is brought to that level, forecast, and scaled back, so the forecast follows THIS home's use
+        # (tree models cannot extrapolate beyond the levels they were trained on).
+        scale = 1.0
+        if not seasonal:
+            level = float(d.iloc[-28:].mean())
+            if level > 0.05:
+                scale = DAILY_REFERENCE_KWH / level
+        F = daily_features(d * scale, len(d) - 1, seasonal, season_dates=season_dates)
+        daily_kwh = np.maximum(model.predict(F.reindex(columns=feats)), 0.0) / scale
         shape = hourly_shape(h)
         start = d.index[-1] + pd.Timedelta(days=1)
         rows = []
@@ -242,6 +250,9 @@ class Forecaster:
         out["day"] = out["datetime"].dt.date
         out["hour"] = out["datetime"].dt.hour
         return out
+
+
+DAILY_REFERENCE_KWH = 25.87      # average daily use of the homes the daily models were trained on
 
 
 class _LightGBMModel:
