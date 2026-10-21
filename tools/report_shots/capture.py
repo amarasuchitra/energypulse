@@ -33,24 +33,31 @@ def shot(page, name):
     print("saved", name)
 
 
-def scroll_series(page, prefix, n=8, step=780):
-    page.mouse.move(1000, 520)
-    for _ in range(12):                                # back to the top
-        page.mouse.wheel(0, -3000)
+JS_SCROLLER = """(dy) => {
+  let best = null, bestH = 0;
+  for (const e of document.querySelectorAll('*')) {
+    const st = getComputedStyle(e);
+    if (!/(auto|scroll)/.test(st.overflowY)) continue;
+    const extra = e.scrollHeight - e.clientHeight;
+    if (extra > 50 && e.clientHeight > 300 && e.scrollHeight > bestH) { best = e; bestH = e.scrollHeight; }
+  }
+  best = best || document.scrollingElement;
+  if (dy === 'top') { best.scrollTo(0, 0); return 0; }
+  const before = best.scrollTop; best.scrollBy(0, dy); return best.scrollTop - before;
+}"""
+
+
+def scroll_series(page, prefix, n=8, step=760):
+    page.evaluate(JS_SCROLLER, "top")
     time.sleep(1.0)
-    last = None
     for i in range(n):
-        data = page.screenshot()
-        if data == last:
-            break
-        with open(f"{OUT}/{prefix}_{i + 1:02d}.png", "wb") as fh:
-            fh.write(data)
+        page.screenshot(path=f"{OUT}/{prefix}_{i + 1:02d}.png")
         print("saved", prefix, i + 1)
-        last = data
-        page.mouse.wheel(0, step)
-        time.sleep(1.6)
-    for _ in range(12):
-        page.mouse.wheel(0, -3000)
+        moved = page.evaluate(JS_SCROLLER, step)
+        time.sleep(1.8)
+        if not moved:
+            break
+    page.evaluate(JS_SCROLLER, "top")
     time.sleep(0.8)
 
 
@@ -113,7 +120,10 @@ with sync_playwright() as p:
         settle(page, 12)
     step("light mode", light_mode)
     settle(page, 10)
-    scroll_series(page, "04_dashboard", 14)
+    scroll_series(page, "04_dashboard", 16)
+    if os.environ.get("SHOT_ONLY") == "dashboard":
+        browser.close()
+        raise SystemExit(0)
 
     def edit():
         click_key(page, "dash_edit_appliances", 6)

@@ -15,6 +15,7 @@ jobs:
       SHOT_EMAIL: asha.demo@example.com
       SHOT_PW: Demo-Report-2026!x
       PYTHONPATH: backend
+      SHOT_ONLY: dashboard
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
