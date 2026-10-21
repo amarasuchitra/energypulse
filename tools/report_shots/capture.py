@@ -33,17 +33,25 @@ def shot(page, name):
     print("saved", name)
 
 
-def scroll_series(page, prefix, n=8):
-    total = page.evaluate(SCROLL_JS, "h")
-    step = 820
+def scroll_series(page, prefix, n=8, step=780):
+    page.mouse.move(1000, 520)
+    for _ in range(12):                                # back to the top
+        page.mouse.wheel(0, -3000)
+    time.sleep(1.0)
+    last = None
     for i in range(n):
-        y = i * step
-        if y > total:
+        data = page.screenshot()
+        if data == last:
             break
-        page.evaluate(SCROLL_JS, y)
-        time.sleep(1.2)
-        shot(page, f"{prefix}_{i + 1:02d}")
-    page.evaluate(SCROLL_JS, 0)
+        with open(f"{OUT}/{prefix}_{i + 1:02d}.png", "wb") as fh:
+            fh.write(data)
+        print("saved", prefix, i + 1)
+        last = data
+        page.mouse.wheel(0, step)
+        time.sleep(1.6)
+    for _ in range(12):
+        page.mouse.wheel(0, -3000)
+    time.sleep(0.8)
 
 
 def click_key(page, key, wait=4.0):
@@ -81,6 +89,10 @@ with sync_playwright() as p:
         g.goto(URL)
         g.wait_for_selector(".st-key-guest_btn button", timeout=120_000)
         click_key(g, "guest_btn", 6)
+        try:
+            g.get_by_role("button", name="Light mode").first.click(); settle(g, 4)
+        except Exception:
+            pass
         shot(g, "02_setup_home")
         click_key(g, "ob_next1", 5)
         shot(g, "03_setup_appliances")
@@ -95,7 +107,13 @@ with sync_playwright() as p:
     page.get_by_role("button", name="Sign In").first.click()
     page.wait_for_selector(".st-key-dash_edit_appliances", timeout=300_000)
     settle(page, 25)                                  # models, 3-D home and the live tiles
-    scroll_series(page, "04_dashboard", 12)
+
+    def light_mode():
+        page.get_by_role("button", name="Light mode").first.click()
+        settle(page, 12)
+    step("light mode", light_mode)
+    settle(page, 10)
+    scroll_series(page, "04_dashboard", 14)
 
     def edit():
         click_key(page, "dash_edit_appliances", 6)
@@ -117,10 +135,11 @@ with sync_playwright() as p:
 
     def photo():
         click_key(page, "nav_appliances", 6)
+        tab(page, "My Devices", 4)
         up = page.locator('[class*="st-key-am_drop_zone"] input[type=file]').first
         up.set_input_files(os.path.join("tests", "fixtures", "ceiling_fan.jpg"))
         settle(page, 40)
-        scroll_series(page, "09_photo_recognition", 3)
+        scroll_series(page, "09_photo_recognition", 4)
     step("photo", photo)
 
     def optimize():
@@ -138,7 +157,7 @@ with sync_playwright() as p:
         tab(page, "Safety", 6)
         scroll_series(page, "14_safety", 3)
         tab(page, "Alerts", 6)
-        scroll_series(page, "15_alerts", 4)
+        scroll_series(page, "15_alerts", 6)
     step("bills", bills)
 
     def household():
@@ -153,7 +172,7 @@ with sync_playwright() as p:
 
     def settings():
         click_key(page, "nav_settings", 8)
-        scroll_series(page, "18_settings", 4)
+        scroll_series(page, "18_settings", 7)
     step("settings", settings)
 
     def light():
