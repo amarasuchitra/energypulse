@@ -204,6 +204,8 @@ with sync_playwright() as p:
         if not box.is_visible():
             click(page, exp, 1.0)
         type_into(page, box, NEXT_READING, delay=140)
+        page.keyboard.press("Enter")
+        settle(page, 2)
         hold(1)
         click(page, key_btn(page, "mr_save"), 0.5)
         settle(page, 4)
@@ -259,13 +261,20 @@ with sync_playwright() as p:
             return el, bb
 
         # choose who is switching
-        el, bb = in_frame("#member")
-        move(page, bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2)
-        page.evaluate("([x, y]) => window.__ptrClick(x, y)", pos)
-        opts = f.locator("#member option").all_inner_texts()
-        pick = next((o for o in opts if "Ravi" in o), opts[-1] if opts else None)
-        if pick:
-            el.select_option(label=pick)
+        el = f.locator("#member").first
+        try:
+            opts = el.locator("option").all_inner_texts()
+            pick = next((o for o in opts if "Ravi" in o), None)
+            if pick and el.is_visible():
+                bb = el.bounding_box()
+                move(page, bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2)
+                page.evaluate("([x, y]) => window.__ptrClick(x, y)", pos)
+            if pick:
+                el.select_option(label=pick)
+                el.dispatch_event("change")
+            log(f"member options {opts}")
+        except Exception:
+            traceback.print_exc()
         hold(2)
 
         def flip(key, confirm=False):
@@ -275,6 +284,9 @@ with sync_playwright() as p:
             sw.scroll_into_view_if_needed()
             hold(0.5)
             bb = sw.bounding_box()
+            if bb is None:
+                log(f"switch {key} not visible")
+                return
             move(page, bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2)
             page.evaluate("([x, y]) => window.__ptrClick(x, y)", pos)
             sw.click()

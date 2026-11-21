@@ -54,6 +54,7 @@ jobs:
           git config user.email amarasuchitra.23aiml@saividya.ac.in
           git checkout --orphan demo-video2-out
           git rm -rfq .
+          git clean -fdxq
           cp /tmp/out/* .
           for f in *.webm; do split -b 80m -d "$f" "$f.part"; rm "$f"; done
           git add -A && git commit -qm "demo video 2 recording" && git push -f origin demo-video2-out
