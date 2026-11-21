@@ -21,4 +21,6 @@ jobs:
           git config user.email amarasuchitra.23aiml@saividya.ac.in
           git checkout --orphan demo-video-out
           git rm -rfq .
-          cp -r /tmp/video/* . && find . -name "*.webm" -size +90M -exec split -b 80m -d {} {}.part ; -exec rm {} ; && git add -A && git commit -qm "demo video recording" && git push -f origin demo-video-out
+          cp -r /tmp/video/* .
+          for f in $(find . -name "*.webm" -size +90M); do split -b 80m -d "$f" "$f.part"; rm "$f"; done
+          git add -A && git commit -qm "demo video recording" && git push -f origin demo-video-out
