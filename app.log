@@ -1,0 +1,103 @@
+2026-11-21 06:32:15.993 Uvicorn server started on :::8501
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://10.0.132.100:8501
+  External URL: http://3.41.210.133:8501
+
+2026-11-21 06:32:22.658 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:32:38.389 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1795242764.773482    3285 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1795242764.773948    3285 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1795242766.427394    3285 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1795242766.427687    3285 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+2026-11-21 06:32:47,919 INFO energypulse.app: Monitoring 9188b336fc615aa74997e8f1bd7d9598: logged 49 forecasts, filled 48 hours, status ok
+2026-11-21 06:32:48,519 INFO energypulse.app: Meter forecast for 2026-11-21 12:00 from 708 finished hours: [0.143, 0.203]
+2026-11-21 06:32:48,620 INFO energypulse.monitoring: Alert 'High energy use earlier today' for household 9188b336 shown in the app only (earlier event, not emailed)
+2026-11-21 06:32:48,623 INFO energypulse.monitoring: Alert 'High energy use earlier today' for household 9188b336 shown in the app only (earlier event, not emailed)
+2026-11-21 06:32:48,624 INFO energypulse.monitoring: Alert 'High energy use earlier today' for household 9188b336 shown in the app only (earlier event, not emailed)
+2026-11-21 06:32:48,625 INFO energypulse.monitoring: Alert 'High energy use earlier today' for household 9188b336 shown in the app only (earlier event, not emailed)
+2026-11-21 06:32:48,625 INFO energypulse.monitoring: Alert 'High energy use earlier today' for household 9188b336 shown in the app only (earlier event, not emailed)
+2026-11-21 06:32:48,629 INFO energypulse.monitoring: Alert 'High energy use earlier today' for household 9188b336 shown in the app only (earlier event, not emailed)
+2026-11-21 06:32:48,630 INFO energypulse.monitoring: Alert 'High energy use earlier today' for household 9188b336 shown in the app only (earlier event, not emailed)
+2026-11-21 06:32:49.189 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:34:36.661 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:34:53.090 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:35:51.437 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:36:13.391 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:36:31.425 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:36:52.535 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:37:59.748 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:38:20.625 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:39:09.517 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:39:33.437 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:39:59.965 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:40:12.558 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:40:23.720 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:41:23.613 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:42:16.708 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:42:49.159 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:42:51.514 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:43:03.714 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:43:23.862 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:43:44.450 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-11-21 06:44:06,359 INFO energypulse.app: Monitoring 9188b336fc615aa74997e8f1bd7d9598: logged 0 forecasts, filled 0 hours, status ok
+2026-11-21 06:44:07,031 INFO energypulse.app: Meter forecast for 2026-11-21 12:00 from 708 finished hours: [0.144, 0.221]
+2026-11-21 06:44:07,112 INFO energypulse.monitoring: Alert 'High energy use earlier today' for household 9188b336 shown in the app only (earlier event, not emailed)
+2026-11-21 06:44:07,113 INFO energypulse.monitoring: Alert 'High energy use earlier today' for household 9188b336 shown in the app only (earlier event, not emailed)
+2026-11-21 06:44:07,114 INFO energypulse.monitoring: Alert 'High energy use earlier today' for household 9188b336 shown in the app only (earlier event, not emailed)
+2026-11-21 06:44:07,117 INFO energypulse.monitoring: Alert 'High energy use earlier today' for household 9188b336 shown in the app only (earlier event, not emailed)
+2026-11-21 06:44:07,120 INFO energypulse.monitoring: Alert 'High energy use earlier today' for household 9188b336 shown in the app only (earlier event, not emailed)
+2026-11-21 06:44:07,123 INFO energypulse.monitoring: Alert 'High energy use earlier today' for household 9188b336 shown in the app only (earlier event, not emailed)
+2026-11-21 06:44:07.329 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
