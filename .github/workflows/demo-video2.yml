@@ -1,0 +1,59 @@
+name: demo video 2
+on:
+  push:
+    branches: [demo-video2]
+permissions:
+  contents: write
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    env:
+      ENERGYPULSE_DB: /tmp/demo.db
+      ENERGYPULSE_NO_SCHEDULER: "1"
+      ENERGYPULSE_SECRET: ci-demo-only
+      SHOT_EMAIL: asha.demo@example.com
+      SHOT_PW: Demo-Report-2026!x
+      PYTHONPATH: backend
+      # Local test mail server (Mailpit) on this machine only.
+      SMTP_HOST: localhost
+      SMTP_PORT: "1025"
+      SMTP_USER: energypulse.alerts@example.com
+      SMTP_PASSWORD: local-test-server
+      SMTP_FROM: energypulse.alerts@example.com
+      SMTP_STARTTLS: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: |
+          sudo apt-get update -qq && xargs -a packages.txt sudo apt-get install -y -qq || true
+          pip install -q -r requirements.txt playwright
+          python -m playwright install --with-deps chromium
+      - name: start the test mail server
+        run: |
+          curl -sSL https://github.com/axllent/mailpit/releases/download/v1.21.8/mailpit-linux-amd64.tar.gz | tar xz -C /tmp
+          nohup /tmp/mailpit --smtp-auth-accept-any --smtp-auth-allow-insecure > /tmp/mailpit.log 2>&1 &
+          sleep 3; curl -sf http://localhost:8025/ > /dev/null && echo mailpit up
+      - run: python tools/report_shots/seed2.py
+      - name: start the app on localhost
+        run: |
+          nohup streamlit run frontend/app.py --server.headless true --server.port 8501 > /tmp/app.log 2>&1 &
+          for i in $(seq 1 120); do curl -sf http://localhost:8501/_stcore/health && break; sleep 2; done
+      - run: python tools/report_shots/record2.py
+      - if: always()
+        run: tail -n 60 /tmp/app.log; tail -n 20 /tmp/mailpit.log
+      - name: publish the recording to a branch
+        if: always()
+        run: |
+          mkdir -p /tmp/out && cp video2/*.webm /tmp/out/ || true
+          cp /tmp/app.log /tmp/out/app.log || true
+          git config user.name amarasuchitra
+          git config user.email amarasuchitra.23aiml@saividya.ac.in
+          git checkout --orphan demo-video2-out
+          git rm -rfq .
+          cp /tmp/out/* .
+          for f in *.webm; do split -b 80m -d "$f" "$f.part"; rm "$f"; done
+          git add -A && git commit -qm "demo video 2 recording" && git push -f origin demo-video2-out
