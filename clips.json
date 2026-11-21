@@ -1,0 +1,134 @@
+[
+ [
+  "a_signin",
+  "sign-in page",
+  7.35,
+  12.35
+ ],
+ [
+  "a_signin",
+  "typing and sign in",
+  12.35,
+  20.19
+ ],
+ [
+  "b_setup",
+  "home setup",
+  40.42,
+  61.77
+ ],
+ [
+  "c_app",
+  "dashboard tiles",
+  60.8,
+  67.8
+ ],
+ [
+  "c_app",
+  "dashboard scroll",
+  67.8,
+  325.28
+ ],
+ [
+  "c_app",
+  "edit appliances",
+  325.28,
+  346.94
+ ],
+ [
+  "c_app",
+  "appliances devices",
+  369.45,
+  377.56
+ ],
+ [
+  "c_app",
+  "what meter shows",
+  387.13,
+  399.64
+ ],
+ [
+  "c_app",
+  "where power goes",
+  409.18,
+  420.08
+ ],
+ [
+  "c_app",
+  "photo upload",
+  425.62,
+  430.64
+ ],
+ [
+  "c_app",
+  "photo result",
+  462.15,
+  472.31
+ ],
+ [
+  "c_app",
+  "optimize",
+  483.84,
+  492.2
+ ],
+ [
+  "c_app",
+  "goals",
+  499.73,
+  507.62
+ ],
+ [
+  "c_app",
+  "upgrade calculator",
+  515.14,
+  521.22
+ ],
+ [
+  "c_app",
+  "bills",
+  532.74,
+  544.62
+ ],
+ [
+  "c_app",
+  "safety",
+  552.18,
+  558.88
+ ],
+ [
+  "c_app",
+  "alerts",
+  566.41,
+  583.23
+ ],
+ [
+  "c_app",
+  "household",
+  592.75,
+  596.75
+ ],
+ [
+  "c_app",
+  "assistant question",
+  603.27,
+  611.12
+ ],
+ [
+  "c_app",
+  "assistant answer",
+  627.62,
+  633.12
+ ],
+ [
+  "c_app",
+  "settings",
+  642.65,
+  660.21
+ ],
+ [
+  "c_app",
+  "closing dashboard",
+  681.27,
+  687.27
+ ]
+]
